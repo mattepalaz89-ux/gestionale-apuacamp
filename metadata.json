@@ -1,0 +1,6 @@
+{
+  "name": "Gestionale ASD Apuacamp",
+  "description": "Piattaforma gestionale completa per ASD: tesseramento, assicurazioni UsAcli, flussi di cassa, eventi, compensi staff e ricevute.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
