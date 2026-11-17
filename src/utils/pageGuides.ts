@@ -99,35 +99,39 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   members: {
     tabId: 'members',
-    title: 'Guida alla Pagina: Anagrafica Soci, Coordinamento Dati & Storico Pluriennale',
+    title: 'Guida alla Pagina: Anagrafica Soci, Riordino Rapido, Buoni Spesa & Modulo Firma',
     shortSubtitle:
-      'Libro soci pluriennale coordinato con Eventi e Tessere, importazione Google Form/Excel e Tessera Digitale.',
+      'Intestazioni cliccabili (A→Z / Z→A), gestione Buoni Spesa attività, PDF Riepilogo Dati da Firmare e invio via Gmail.',
     overview:
-      "Qui gestisci il Libro Soci completo dell'ASD: dati anagrafici del minore e del genitore, codici fiscali, allergie, bisogni speciali (BES), consensi foto/video e storico tessere. L'anagrafica è coordinata in tempo reale sia con la sezione separata 'Tessere & Coperture' sia con la pagina 'Eventi & Iscrizioni'.",
+      "Qui gestisci il Libro Soci completo dell'ASD: dati anagrafici del minore e del genitore, codici fiscali, allergie, bisogni speciali (BES), consensi foto/video, credito Buoni Spesa e archivio del Modulo Riepilogo Dati firmato dai genitori. L'anagrafica è coordinata in tempo reale sia con la sezione 'Tessere & Coperture' sia con la pagina 'Eventi & Iscrizioni'.",
     features: [
       {
-        title: '1. Soci Salvati Anno per Anno Senza Notifiche Inutili',
+        title: '1. Riordino Rapido Cliccando sulle Intestazioni della Tabella (A→Z / Z→A)',
         description:
-          "I soci restano salvati in Anagrafica di anno in anno: quando cambi anno scade solo il tesserino, e il sistema invia la notifica di rinnovo tessera SOLO se il socio si iscrive effettivamente a un evento o attività dell'anno.",
+          'Clicca direttamente sui titoli delle colonne della tabella ("Bimbo / Socio", "Gruppo", "Genitore & Contatti", "N° Tessera / Tipo / Scadenza", "Quota & Buono"): il primo clic ordina dalla A alla Z (crescente), il secondo clic inverte l\'ordine dalla Z alla A (decrescente).',
+        actionHint: 'Clicca su qualsiasi intestazione di colonna nella tabella dei soci.',
       },
       {
-        title: '2. Coordinamento Automatico con Eventi e Sezione Tessere',
+        title: '2. Gestione Buoni Spesa per Compensare i Costi delle Attività',
         description:
-          "Qualsiasi modifica fatta in Anagrafica aggiorna automaticamente la sezione 'Tessere & Coperture' e le iscrizioni agli Eventi, e viceversa non devi mai reinserire due volte gli stessi dati.",
+          'Nella scheda di ogni socio puoi inserire e aggiornare un credito "Buono Spesa Disponibile (€)" (con relative note) da spendere in tutto o in parte per compensare il costo di eventi, campi estivi, doposcuola o altre attività. Gli sconti specifici (ISEE o coperture enti) si applicano invece direttamente nei singoli Eventi e nelle Ricevute.',
+        actionHint: 'Apri la scheda di un socio (matita) o clicca "+ Nuovo Socio" per impostare il Buono Spesa.',
       },
       {
-        title: '3. Collegamento Modulo Google (Google Form) → Anagrafica Soci',
+        title: '3. Modulo Riepilogo Dati & Consensi da Firmare (PDF A4 + Invio Gmail)',
         description:
-          'Genera il Google Form personalizzato e importa con un clic le risposte compilate dai genitori direttamente in Anagrafica e nel Foglio Google Sheets.',
+          'Su ogni riga trovi il pulsante "Modulo Firma": apre il documento ufficiale con tutti i dati inviati dal socio (anagrafica, contatti, allergie/farmaci/BES, consenso foto/video, privacy GDPR e riquadri per la firma autografa dei genitori). Puoi scaricarlo in PDF A4, inviarlo via Gmail con allegato al genitore affinché lo controfirmi e spuntare "Firmato OK" quando rientra in archivio.',
+        actionHint: 'Clicca sul pulsante "Modulo Firma" (o "Firmato OK") nella riga del socio.',
       },
       {
-        title: '4. Tessera Digitale Personalizzabile & Registrazione Cassa con Data Scelta',
+        title: '4. Coordinamento Automatico con Eventi, Tessere & Google Form',
         description:
-          'Genera la Tessera Digitale del socio (con sfondo/logo personalizzabili) e, quando registri l\'incasso di una tessera in Cassa, scegli se usare la Data di Oggi o una Data Diversa.',
+          'Qualsiasi modifica fatta in Anagrafica aggiorna automaticamente la sezione "Tessere & Coperture" e le iscrizioni agli Eventi. Dal cassetto "Importa / Google Form & Excel ▾" puoi sincronizzare le risposte del modulo d\'iscrizione online.',
       },
     ],
     proTips: [
-      'Se vuoi lavorare esclusivamente sulle tessere, sulle scadenze US ACLI e sui rinnovi senza aprire le schede anagrafiche complete, usa la nuova voce di menu "Tessere & Coperture".',
+      'Il badge verde "Firmato OK" accanto al pulsante del modulo ti permette di vedere a colpo d\'occhio quali famiglie hanno già riconsegnato il modulo cartaceo o digitale firmato.',
+      'Gli sconti non sono fissi in anagrafica: si inseriscono direttamente nei singoli Eventi o al momento di generare la Ricevuta.',
     ],
     driveIntegrationNote:
       'Il Modulo Google e il Foglio Google "Anagrafica Soci" vengono salvati in "Gestionale ASD / 01_Anagrafica_Soci_e_Tessere".',
@@ -135,34 +139,34 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   cards: {
     tabId: 'cards',
-    title: 'Guida alla Pagina: Tessere US ACLI & Coperture Assicurative (Sezione Dedicata)',
+    title: 'Guida alla Pagina: Tessere US ACLI, Riordino Colonne & Coperture Assicurative',
     shortSubtitle:
-      'Gestione dedicata alle sole tessere, livelli assicurativi, Formula Tessera 365 e Tessera Digitale, sincronizzata con Anagrafica ed Eventi.',
+      'Intestazioni cliccabili (per N° Tessera, Tipo, Scadenza, Socio, Genitore), Formula Tessera 365 e Tessera Digitale.',
     overview:
-      "Questa sezione permette di gestire, emettere e rinnovare esclusivamente le Tessere US ACLI e le coperture assicurative in modo rapido e separato dall'Anagrafica completa, mantenendo però il 100% di sincronizzazione automatica con l'Anagrafica Soci, gli Eventi e il Flusso di Cassa.",
+      "Questa sezione permette di gestire, ordinare, emettere e rinnovare esclusivamente le Tessere US ACLI e le coperture assicurative in modo rapido e separato dall'Anagrafica completa, mantenendo il 100% di sincronizzazione automatica con l'Anagrafica Soci, gli Eventi e il Flusso di Cassa.",
     features: [
       {
-        title: '1. Modifica o Rinnovo Rapido della Sola Tessera',
+        title: '1. Riordino Rapido per N° Tessera, Tipo di Tessera, Scadenza, Nome o Genitore',
+        description:
+          'Clicca sulle intestazioni della tabella ("Socio / Bimbo", "Genitore & Contatti", "N° Tessera US ACLI", "Livello Assicurativo", "Emissione & Scadenza", "Stato Quota") per ordinare istantaneamente l\'elenco (1° clic A→Z, 2° clic Z→A).',
+        actionHint: 'Clicca sul titolo della colonna che desideri ordinare.',
+      },
+      {
+        title: '2. Modifica o Rinnovo Rapido della Sola Tessera',
         description:
           'Cliccando su "Modifica / Rinnova Tessera" apri un popup dedicato ai soli dati di tesseramento (Numero Tessera US ACLI, Livello Assicurativo, Data Emissione, Formula Solare 31/12 o Tessera 365 e Quota pagata) che aggiorna istantaneamente anche l\'Anagrafica Soci.',
         actionHint: 'Clicca su "Modifica / Rinnova Tessera" su qualsiasi riga della tabella.',
       },
       {
-        title: '2. Emissione Nuova Tessera con Creazione/Aggiornamento Automatico Socio',
+        title: '3. Ricevuta Tessera PDF & Invio Diretto tramite Gmail',
         description:
-          'Puoi emettere una tessera sia per un socio già presente in Anagrafica sia per un nuovo iscritto: se la persona non è ancora in Anagrafica, viene inserita automaticamente senza doppi inserimenti.',
-        actionHint: 'Clicca su "Nuova Tessera / Nuovo Socio" in alto a destra.',
-      },
-      {
-        title: '3. Scelta Data Movimento ("Data di Oggi" vs "Data Diversa") per il Flusso di Cassa',
-        description:
-          'Quando registri l\'incasso della quota tessera nel Flusso di Cassa, il popup ti chiede se registrare il movimento con la Data di Oggi o con una Data Diversa (reale).',
+          'Cliccando sull\'icona della stampante puoi generare la ricevuta della quota associativa e inviarla direttamente al genitore tramite Gmail con il PDF allegato.',
       },
       {
         title: '4. Generatore Tessera Digitale PDF/PNG & Nomi Assicurazioni Personalizzabili',
         description:
-          'Genera la Tessera Digitale da inviare al socio via email/WhatsApp e personalizza liberamente i nomi dei livelli assicurativi (Base, Summer, Gold, Platinum), lo stemma ASD, lo sfondo (immagine o PDF) e la posizione dei testi.',
-        actionHint: 'Clicca su "Modello Tessera Digitale & Nomi Assicurazioni" o sull\'icona Tessera Digitale.',
+          'Genera la Tessera Digitale da inviare al socio e personalizza liberamente i nomi dei livelli assicurativi (Base, Summer, Gold, Platinum), lo stemma ASD, lo sfondo e la posizione dei testi.',
+        actionHint: 'Clicca su "Modello Tessera Digitale & Nomi Assicurazioni".',
       },
     ],
     proTips: [
@@ -174,36 +178,37 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   events: {
     tabId: 'events',
-    title: 'Guida alla Pagina: Eventi, Coordinamento Anagrafica/Tessera & Briefing',
+    title: 'Guida alla Pagina: Eventi, Sconti Personalizzabili (ISEE / Enti), Buoni & Ricevute Gmail',
     shortSubtitle:
-      'Iscrizioni evento coordinate in automatico con Anagrafica e Tessere, scelta data movimenti cassa e briefing pre-evento.',
+      'Sconti evento in Quota Fissa (€) o Percentuale (%) con diciture salvabili, utilizzo Buoni Spesa e invio ricevute via Gmail.',
     overview:
-      "Permette di gestire gli eventi dell'ASD (Campi Estivi, Rifugi, Wild Camp, La Selva, Giornate) con coordinamento automatico totale verso Anagrafica Soci, Tessere e Flusso di Cassa.",
+      "Permette di gestire gli eventi dell'ASD (Campi Estivi, Rifugi, Wild Camp, La Selva, Giornate) con coordinamento automatico verso Anagrafica e Tessere, gestione di Sconti specifici per singolo evento (in quota fissa € o in percentuale %) con diciture personalizzabili per le ricevute, compensazione Buoni Spesa e invio email tramite Gmail.",
     features: [
       {
-        title: '1. Popup "Inserisci / Modifica Anagrafica & Tessera" Direttamente dall\'Evento',
+        title: '1. Sconti per Singolo Evento (Quota Fissa € o Percentuale %) e Diciture Salvabili',
         description:
-          'Se un iscritto a un evento non ha la tessera (o non è ancora in Anagrafica), cliccando sul bottone della sua tessera nella tabella iscritti o su "Inserisci Tessera / Anagrafica" nel Briefing Pre-Evento si apre un popup che mostra i dati attuali e permette di inserirli o modificarli direttamente in Anagrafica e Tessere.',
-        actionHint: 'Clicca sul pulsante tessera nella colonna "Tessera & Coordinamento Anagrafica" o nel Briefing Pre-Evento.',
+          'Poiché gli sconti non sono fissi ma variano per singolo evento o attività (es. riduzioni fascia ISEE, quote coperte in tutto o in parte da Comuni o da altre Associazioni, sconto fratelli), puoi inserirli sia quando iscrivi un partecipante sia cliccando sull\'icona Cartellino Sconto nella riga dell\'iscritto. Scegli tra Quota Fissa (€) o Percentuale (%) e inserisci la dicitura per la ricevuta: la dicitura resta salvata automaticamente tra quelle selezionabili per ricevute future di altri soci o di altri eventi.',
+        actionHint: 'Clicca sull\'icona Cartellino Sconto nelle azioni dell\'iscritto o nella finestra "Iscrivi Partecipante".',
       },
       {
-        title: '2. Inserimento Automatico in Anagrafica dalla Nuova Iscrizione Evento',
+        title: '2. Utilizzo Buoni Spesa per Compensare il Costo dell\'Evento',
         description:
-          'Quando iscrivi un nuovo partecipante a un evento (o importi da Excel/Google Form), se non è ancora presente in Anagrafica Soci viene inserito e collegato automaticamente.',
+          'Se il socio dispone di un Buono Spesa in Anagrafica, quando lo selezioni per l\'iscrizione all\'evento il sistema mostra subito il credito disponibile e permette di utilizzarlo in tutto o in parte per ridurre il saldo netto da pagare.',
       },
       {
-        title: '3. Scelta "Data di Oggi" o "Data Diversa" per Caparre e Saldi in Cassa',
+        title: '3. Ricevuta Evento Precompilata & Invio tramite Gmail con PDF Allegato',
         description:
-          'Quando registri il pagamento di una caparra o di un saldo (sia in fase di iscrizione sia cliccando sui badge Caparra/Saldo in tabella), scegli sempre se registrare l\'entrata nel Flusso di Cassa con la Data di Oggi o con una Data Diversa (reale).',
+          'Cliccando sull\'icona Stampante accanto a un iscritto, il sistema apre il Modello Ricevuta proponendo già in automatico le voci dell\'evento, l\'eventuale sconto con la sua dicitura specifica e il buono applicato, pronto per essere scaricato in PDF o inviato con un clic tramite Gmail.',
+        actionHint: 'Clicca sull\'icona Stampante nella riga dell\'iscritto e poi su "Invia via Gmail (con PDF allegato)".',
       },
       {
-        title: '4. Briefing Operativo Pre-Evento & Pulsanti Compatti con Tooltip',
+        title: '4. Popup Coordinamento Anagrafica/Tessera & Briefing Pre-Evento',
         description:
-          'Controlla subito tessere mancanti/scadute, allergie, bisogni speciali e consensi foto. I pulsanti secondari della barra strumenti sono ridotti a icone intuitive con descrizione al passaggio del mouse.',
+          'Controlla subito tessere mancanti/scadute, allergie, bisogni speciali e consensi foto, e regolarizza anagrafica e tessera direttamente dall\'evento senza cambiare pagina.',
       },
     ],
     proTips: [
-      'Non appena un socio di un anno precedente viene iscritto a un evento, se la sua tessera è scaduta il gestionale attiva automaticamente l\'avviso di rinnovo tessera.',
+      'Ogni nuova dicitura di sconto che scrivi (es. "Quota coperta da Associazione X") viene memorizzata automaticamente nel menu a tendina per risparmiarti di riscriverla per gli altri ragazzi.',
     ],
     driveIntegrationNote:
       'I Moduli Google e gli elenchi iscritti vengono archiviati in "Gestionale ASD / 03_Eventi_e_Iscritti".',
@@ -211,11 +216,11 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   gadgets: {
     tabId: 'gadgets',
-    title: 'Guida alla Pagina: Gadget, Merchandising & Prenotazioni',
+    title: 'Guida alla Pagina: Gadget, Merchandising, Ricevute PDF & Invio Gmail',
     shortSubtitle:
-      'Catalogo materiale associativo, prenotazioni taglie, scelta data movimento in cassa e alert email.',
+      'Catalogo materiale associativo, prenotazioni taglie, generazione ricevuta PDF e invio conferma via Gmail.',
     overview:
-      "Gestisce il catalogo dei gadget associativi e le prenotazioni dei soci, permettendo di registrare l'incasso nel Flusso di Cassa scegliendo tra Data di Oggi e Data Diversa.",
+      "Gestisce il catalogo dei gadget associativi e le prenotazioni dei soci, permettendo di registrare l'incasso nel Flusso di Cassa e di inviare la ricevuta PDF in allegato tramite Gmail.",
     features: [
       {
         title: '1. Catalogo Articoli, Taglie e Giacenze Magazzino',
@@ -224,19 +229,19 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
         actionHint: 'Clicca su "Aggiungi Articolo a Catalogo".',
       },
       {
-        title: '2. Prenotazioni con Scelta Data Movimento ("Data di Oggi" o "Data Diversa")',
+        title: '2. Ricevuta Gadget Automatica & Invio tramite Gmail con PDF Allegato',
         description:
-          'Quando registri una prenotazione già pagata, il sistema ti permette di scegliere se contabilizzare l\'entrata nel Flusso di Cassa con la data odierna o con la data effettiva del pagamento.',
-        actionHint: 'Clicca su "Nuova Prenotazione Gadget" e seleziona "Già Pagato".',
+          'Cliccando sull\'icona Stampante nella riga di una prenotazione gadget si apre il Modello Ricevuta Intelligente già impostato con i dati del gadget prenotato, pronto per essere inviato via Gmail con il PDF allegato.',
+        actionHint: 'Clicca sull\'icona Stampante nella colonna Azioni della prenotazione gadget.',
       },
       {
-        title: '3. Controllo Consegne ed Email di Conferma Prenotazione',
+        title: '3. Controllo Consegne, Scelta Data Cassa ed Email di Conferma',
         description:
-          'Con un clic segni se il gadget è stato pagato, se è stato consegnato e se è stata inviata l\'email di conferma al genitore.',
+          'Con un clic segni se il gadget è stato pagato (scegliendo tra Data di Oggi e Data Diversa per il libro cassa), se è stato consegnato e se è stata inviata l\'email al genitore.',
       },
     ],
     proTips: [
-      'Le prenotazioni gadget per cui non è ancora stata inviata l\'email di conferma vengono segnalate automaticamente tra gli Alert Email.',
+      'Puoi anche combinare nella stessa ricevuta il Gadget insieme alla Tessera o a un Evento usando i pulsanti "+ Evento" / "+ Tessera" dentro la finestra della ricevuta.',
     ],
     driveIntegrationNote:
       'Puoi importare prenotazioni da fogli CSV/Excel e salvare tutto su Google Drive o File Locale PC.',
@@ -335,39 +340,40 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   receipts_config: {
     tabId: 'receipts_config',
-    title: 'Guida alla Pagina: Configurazione Ricevute, 3 Layout PDF & Overlay Timbro/Firma',
+    title: 'Guida alla Pagina: Modello Ricevute Intelligente, Modelli Email Gmail & Diciture Sconto',
     shortSubtitle:
-      'Scelta tra 3 template grafici PDF (Standard, Minimalista, Ufficiale), testi dinamici e Timbro/Firma.',
+      'Compositore ricevute multi-voce (Eventi, Doposcuola, Tessere, Gadget), 5 modelli email Gmail e archivio diciture sconto.',
     overview:
-      'Questo pannello ti permette di scegliere il layout grafico delle Ricevute PDF (Standard Classico, Minimalista Moderno o Ufficiale Istituzionale con Bordo), personalizzare i testi con variabili automatiche e posizionare Timbro ASD e Firma del Presidente.',
+      'Questo pannello ti permette di personalizzare il Modello Unico Intelligente per le Ricevute PDF (valido per Eventi, Mensile Doposcuola/Selva, Tessere e Gadget), configurare Timbro ASD e Firma del Presidente, modificare i 5 Modelli Email predefiniti per l\'invio tramite Gmail e gestire l\'archivio delle Diciture Sconto selezionabili.',
     features: [
       {
-        title: '1. Scelta tra 3 Template Grafici PDF (Standard, Minimalista, Ufficiale)',
+        title: '1. Compositore Ricevute Intelligente (Eventi, Mensile Doposcuola, Tessere, Gadget)',
         description:
-          'Scegli lo stile grafico del documento PDF finale tra "Standard Classico", "Minimalista Moderno" e "Ufficiale Istituzionale" con anteprima A4 immediata.',
+          'Quando apri una ricevuta da un Evento, da una Tessera o da un Gadget, il sistema propone già automaticamente la voce corrispondente. Puoi sempre aggiungere, rimuovere o modificare al volo più voci nella stessa ricevuta (es. Evento + Tessera o Mensile Doposcuola), inserire uno sconto in Quota Fissa (€) o Percentuale (%) con dicitura personalizzata e scalare un Buono Spesa.',
       },
       {
-        title: '2. Caricamento File Timbro dell\'ASD e Firma del Presidente (Base64)',
+        title: '2. Scheda "4. Modelli Email & Sconti": 5 Modelli Email per Gmail con Allegato PDF',
         description:
-          'Carica dal computer i file immagine (PNG/JPG) del Timbro dell\'ASD e della Firma del Presidente (oppure disegnali/generali digitalmente).',
+          'Nella scheda "4. Modelli Email & Sconti" puoi personalizzare i 5 modelli email precompilati (Conferma & Ricevuta Evento, Ricevuta Tessera, Ricevuta Mensile Doposcuola, Ricevuta Gadget e Riepilogo Dati Iscrizione da Firmare). Quando premi "Invia via Gmail", il sistema aggiorna automaticamente il testo con i dati del socio in questione e allega il PDF.',
+        actionHint: 'Clicca sulla scheda blu "4. Modelli Email & Sconti" in questa pagina.',
       },
       {
-        title: '3. Modifica Testi Predefiniti con Variabili Dinamiche {{...}} & Campi Extra',
+        title: '3. Archivio Diciture Sconto / Copertura Quota Selezionabili',
         description:
-          'Personalizza titoli, formula di quietanza e clausole fiscali (Art. 148 TUIR, Esenzione Bollo ASD, Detrazione 19%) con variabili automatiche come {{socio}}, {{genitore}}, {{cf_socio}}, {{importo}}.',
+          'Tutte le diciture inserite per motivare gli sconti nelle ricevute (es. "Riduzione fascia ISEE", "Quota coperta da Comune / Associazione Partner") restano salvate e possono essere gestite o aggiunte nella scheda "4. Modelli Email & Sconti".',
       },
       {
-        title: '4. Regolazione Millimetrica Overlay PDF e Anteprima A4 in Tempo Reale',
+        title: '4. Scelta tra 3 Layout Grafici PDF e Overlay Timbro ASD / Firma Presidente',
         description:
-          'Regola con gli slider Dimensione (%), Rotazione (°), Opacità e spostamento X/Y del Timbro e della Firma vedendo l\'effetto in diretta sul foglio A4.',
-        actionHint: 'Clicca su "Scarica PDF di Prova" per testare subito il documento generato.',
+          'Scegli tra "Standard Classico", "Minimalista Moderno" e "Ufficiale Istituzionale" e regola posizione, scala e rotazione del Timbro ASD e della Firma del Presidente.',
+        actionHint: 'Clicca su "Scarica PDF di Prova" per verificare il risultato finale.',
       },
     ],
     proTips: [
-      'Una volta configurato il modello, tutte le ricevute emesse da Anagrafica Soci, Tessere, Eventi e Flusso di Cassa useranno automaticamente questo layout.',
+      'Anche prima di inviare una singola email tramite Gmail puoi ritoccare liberamente l\'oggetto o il testo per quella famiglia specifica prima di premere "Conferma e Invia".',
     ],
     driveIntegrationNote:
-      'Il modello ricevuta e le immagini di Timbro e Firma sono salvati dentro il database su Google Drive o nel File Locale .json su PC.',
+      'Il modello ricevuta, i 5 modelli email, le diciture sconto e le immagini di Timbro e Firma sono salvati su Google Drive o nel File Locale .json su PC.',
   },
 
   notifications: {

@@ -23,10 +23,13 @@ import {
   CreditCard,
   UserCheck,
   UserPlus,
+  Tag,
+  Ticket,
 } from 'lucide-react';
 import {
   EventItem,
   EventBooking,
+  EventDiscountType,
   Member,
   PaymentMethod,
   AssociationProfile,
@@ -36,7 +39,13 @@ import {
   AgeGroup,
   CardValidityType,
 } from '../types';
-import { formatEuro, calculateEventFinancials, parseAmount } from '../utils/finance';
+import {
+  formatEuro,
+  calculateEventFinancials,
+  parseAmount,
+  calculateDiscountedEventPrice,
+  mergeSavedDiscountLabels,
+} from '../utils/finance';
 import { generateReceiptEmailLink } from '../utils/export';
 import { INITIAL_ASSOCIATION_PROFILE } from '../data/initialData';
 import { generatePreEventBriefings } from '../utils/notifications';
@@ -122,14 +131,22 @@ export const EventsView: React.FC<EventsViewProps> = ({
   const [evStaffCount, setEvStaffCount] = useState(3);
   const [evStatus, setEvStatus] = useState<EventItem['status']>('aperto');
   const [evNotes, setEvNotes] = useState('');
+  const [evDefaultDiscountType, setEvDefaultDiscountType] = useState<EventDiscountType>('none');
+  const [evDefaultDiscountValue, setEvDefaultDiscountValue] = useState<number>(0);
+  const [evDefaultDiscountLabel, setEvDefaultDiscountLabel] = useState<string>('');
 
-  // New booking form + automatic Anagrafica & CashFlow coordination
+  // New booking form + automatic Anagrafica & CashFlow coordination + Event Discount & Voucher
   const todayIso = new Date().toISOString().slice(0, 10);
   const [selectedMemberId, setSelectedMemberId] = useState('');
   const [childName, setChildName] = useState('');
   const [parentName, setParentName] = useState('');
   const [parentEmail, setParentEmail] = useState('');
   const [parentPhone, setParentPhone] = useState('');
+  const [bookingBasePrice, setBookingBasePrice] = useState<number>(130);
+  const [bookingDiscountType, setBookingDiscountType] = useState<EventDiscountType>('none');
+  const [bookingDiscountValue, setBookingDiscountValue] = useState<number>(0);
+  const [bookingDiscountLabel, setBookingDiscountLabel] = useState<string>('');
+  const [bookingVoucherUsed, setBookingVoucherUsed] = useState<number>(0);
   const [depositAmount, setDepositAmount] = useState<number>(70);
   const [balanceAmount, setBalanceAmount] = useState<number>(60);
   const [isDepositPaid, setIsDepositPaid] = useState<boolean>(true);
@@ -142,6 +159,32 @@ export const EventsView: React.FC<EventsViewProps> = ({
   const [autoRecordBookingCash, setAutoRecordBookingCash] = useState<boolean>(true);
   const [bookingCashDateMode, setBookingCashDateMode] = useState<'today' | 'custom'>('today');
   const [bookingCashDate, setBookingCashDate] = useState<string>(todayIso);
+
+  // Modal Rapido "Sconto Evento & Buono Spesa" per un iscritto esistente
+  const [discountModalBooking, setDiscountModalBooking] = useState<EventBooking | null>(null);
+  const [editBkBasePrice, setEditBkBasePrice] = useState<number>(130);
+  const [editBkDiscountType, setEditBkDiscountType] = useState<EventDiscountType>('none');
+  const [editBkDiscountValue, setEditBkDiscountValue] = useState<number>(0);
+  const [editBkDiscountLabel, setEditBkDiscountLabel] = useState<string>('');
+  const [editBkVoucherUsed, setEditBkVoucherUsed] = useState<number>(0);
+  const [editBkDeposit, setEditBkDeposit] = useState<number>(70);
+
+  const savedDiscountLabels = useMemo(
+    () => mergeSavedDiscountLabels(profile.savedDiscountLabels),
+    [profile.savedDiscountLabels]
+  );
+
+  const persistDiscountLabelIfNew = (label?: string) => {
+    const trimmed = (label || '').trim();
+    if (!trimmed || !onUpdateProfile) return;
+    const merged = mergeSavedDiscountLabels(profile.savedDiscountLabels, trimmed);
+    if (merged.length !== (profile.savedDiscountLabels || []).length) {
+      onUpdateProfile({
+        ...profile,
+        savedDiscountLabels: merged,
+      });
+    }
+  };
 
   // Popup di Coordinamento Automatico Evento <-> Anagrafica Soci & Tessere
   const [syncBookingTarget, setSyncBookingTarget] = useState<EventBooking | null>(null);
@@ -373,6 +416,9 @@ export const EventsView: React.FC<EventsViewProps> = ({
     setEvStaffCount(3);
     setEvStatus('aperto');
     setEvNotes('');
+    setEvDefaultDiscountType('none');
+    setEvDefaultDiscountValue(0);
+    setEvDefaultDiscountLabel('');
     setIsEventModalOpen(true);
   };
 
@@ -390,12 +436,19 @@ export const EventsView: React.FC<EventsViewProps> = ({
     setEvStaffCount(ev.targetStaffCount || 3);
     setEvStatus(ev.status);
     setEvNotes(ev.notes || '');
+    setEvDefaultDiscountType(ev.defaultDiscountType || 'none');
+    setEvDefaultDiscountValue(ev.defaultDiscountValue || 0);
+    setEvDefaultDiscountLabel(ev.defaultDiscountLabel || '');
     setIsEventModalOpen(true);
   };
 
   const handleSaveEvent = (e: React.FormEvent) => {
     e.preventDefault();
     if (!evName.trim()) return;
+
+    if (evDefaultDiscountType !== 'none' && evDefaultDiscountLabel.trim()) {
+      persistDiscountLabelIfNew(evDefaultDiscountLabel);
+    }
 
     if (editingEvent) {
       onUpdateEvent({
@@ -412,6 +465,9 @@ export const EventsView: React.FC<EventsViewProps> = ({
         status: evStatus,
         targetStaffCount: Number(evStaffCount) || 2,
         notes: evNotes.trim(),
+        defaultDiscountType: evDefaultDiscountType,
+        defaultDiscountValue: Number(evDefaultDiscountValue) || 0,
+        defaultDiscountLabel: evDefaultDiscountLabel.trim(),
       });
       setStatusMsg({
         text: `Evento "${evName.trim()}" aggiornato con le nuove condizioni, fasce d'età e quote!`,
@@ -430,6 +486,9 @@ export const EventsView: React.FC<EventsViewProps> = ({
         status: evStatus,
         targetStaffCount: Number(evStaffCount) || 2,
         notes: evNotes.trim(),
+        defaultDiscountType: evDefaultDiscountType,
+        defaultDiscountValue: Number(evDefaultDiscountValue) || 0,
+        defaultDiscountLabel: evDefaultDiscountLabel.trim(),
       });
       setStatusMsg({
         text: `Nuovo evento "${evName.trim()}" creato!`,
@@ -455,23 +514,64 @@ export const EventsView: React.FC<EventsViewProps> = ({
     });
   };
 
+  const applyRecalculatedBookingAmounts = (
+    base: number,
+    dType: EventDiscountType,
+    dVal: number,
+    vUsed: number,
+    currentDeposit: number
+  ) => {
+    const calc = calculateDiscountedEventPrice({
+      basePrice: base,
+      discountType: dType,
+      discountValue: dVal,
+      voucherUsed: vUsed,
+    });
+    const adjDeposit = Math.min(currentDeposit, calc.finalNetPrice);
+    const adjBalance = Math.max(0, calc.finalNetPrice - adjDeposit);
+    setDepositAmount(adjDeposit);
+    setBalanceAmount(adjBalance);
+  };
+
   const handleSelectMember = (mId: string) => {
     setSelectedMemberId(mId);
-    if (!mId) return;
+    if (!mId) {
+      setBookingVoucherUsed(0);
+      return;
+    }
     const member = members.find((m) => m.id === mId);
     if (member) {
       setChildName(member.childName);
       setParentName(member.parentName);
       setParentEmail(member.parentEmail || '');
       setParentPhone(member.parentPhone || '');
+      setBookingVoucherUsed(0);
     }
   };
 
   const handleOpenAddBooking = () => {
     if (!currentEvent) return;
-    const defDep = currentEvent.depositDefault ?? Math.round(currentEvent.memberPrice / 2);
-    setDepositAmount(defDep);
-    setBalanceAmount(Math.max(0, currentEvent.memberPrice - defDep));
+    const base = currentEvent.memberPrice;
+    const defDep = currentEvent.depositDefault ?? Math.round(base / 2);
+    const dType = currentEvent.defaultDiscountType || 'none';
+    const dVal = currentEvent.defaultDiscountValue || 0;
+    const dLabel = currentEvent.defaultDiscountLabel || '';
+
+    setBookingBasePrice(base);
+    setBookingDiscountType(dType);
+    setBookingDiscountValue(dVal);
+    setBookingDiscountLabel(dLabel);
+    setBookingVoucherUsed(0);
+
+    const calc = calculateDiscountedEventPrice({
+      basePrice: base,
+      discountType: dType,
+      discountValue: dVal,
+      voucherUsed: 0,
+    });
+    const adjDep = Math.min(defDep, calc.finalNetPrice);
+    setDepositAmount(adjDep);
+    setBalanceAmount(Math.max(0, calc.finalNetPrice - adjDep));
     setBookingCashDateMode('today');
     setBookingCashDate(new Date().toISOString().slice(0, 10));
     setIsAddBookingOpen(true);
@@ -480,6 +580,17 @@ export const EventsView: React.FC<EventsViewProps> = ({
   const handleCreateBooking = (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentEvent || !childName.trim()) return;
+
+    const calc = calculateDiscountedEventPrice({
+      basePrice: bookingBasePrice,
+      discountType: bookingDiscountType,
+      discountValue: bookingDiscountValue,
+      voucherUsed: bookingVoucherUsed,
+    });
+
+    if (bookingDiscountType !== 'none' && bookingDiscountLabel.trim()) {
+      persistDiscountLabelIfNew(bookingDiscountLabel);
+    }
 
     const totalPrice = (depositAmount || 0) + (balanceAmount || 0);
     let finalMemberId = selectedMemberId || undefined;
@@ -520,6 +631,17 @@ export const EventsView: React.FC<EventsViewProps> = ({
       }
     }
 
+    // Deduct voucher from member if used
+    if (finalMemberId && calc.voucherApplied > 0) {
+      const targetMember = members.find((m) => m.id === finalMemberId);
+      if (targetMember && (targetMember.voucherBalance || 0) > 0) {
+        onUpdateMember({
+          ...targetMember,
+          voucherBalance: Math.max(0, (targetMember.voucherBalance || 0) - calc.voucherApplied),
+        });
+      }
+    }
+
     onAddBooking({
       eventId: currentEvent.id,
       eventName: currentEvent.name,
@@ -534,6 +656,12 @@ export const EventsView: React.FC<EventsViewProps> = ({
       isDepositPaid,
       isBalancePaid,
       totalPrice,
+      basePrice: calc.basePrice,
+      discountType: bookingDiscountType,
+      discountValue: bookingDiscountType !== 'none' ? bookingDiscountValue : 0,
+      discountAmount: calc.discountAmount,
+      discountLabel: bookingDiscountType !== 'none' ? bookingDiscountLabel.trim() : undefined,
+      voucherApplied: calc.voucherApplied > 0 ? calc.voucherApplied : undefined,
       annualCardValid: !extraInsurance,
       extraInsurancePaid: extraInsurance,
       paymentMethod,
@@ -581,6 +709,86 @@ export const EventsView: React.FC<EventsViewProps> = ({
     setParentPhone('');
     setBookingNotes('');
     setEmailSent(false);
+    setBookingDiscountType('none');
+    setBookingDiscountValue(0);
+    setBookingDiscountLabel('');
+    setBookingVoucherUsed(0);
+  };
+
+  const openDiscountBookingModal = (bk: EventBooking) => {
+    const base =
+      bk.basePrice !== undefined && bk.basePrice > 0
+        ? bk.basePrice
+        : currentEvent?.memberPrice || bk.totalPrice;
+    setDiscountModalBooking(bk);
+    setEditBkBasePrice(base);
+    setEditBkDiscountType(bk.discountType || 'none');
+    setEditBkDiscountValue(bk.discountValue || 0);
+    setEditBkDiscountLabel(bk.discountLabel || '');
+    setEditBkVoucherUsed(bk.voucherApplied || 0);
+    setEditBkDeposit(bk.depositAmount);
+  };
+
+  const handleSaveBookingDiscountAndVoucher = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!discountModalBooking) return;
+
+    const calc = calculateDiscountedEventPrice({
+      basePrice: editBkBasePrice,
+      discountType: editBkDiscountType,
+      discountValue: editBkDiscountValue,
+      voucherUsed: editBkVoucherUsed,
+    });
+
+    if (editBkDiscountType !== 'none' && editBkDiscountLabel.trim()) {
+      persistDiscountLabelIfNew(editBkDiscountLabel);
+    }
+
+    // Adjust member voucher balance if voucher delta changed
+    const prevVoucher = discountModalBooking.voucherApplied || 0;
+    const deltaVoucher = calc.voucherApplied - prevVoucher;
+    if (deltaVoucher !== 0) {
+      const matchedMember = members.find(
+        (m) =>
+          (discountModalBooking.memberId && m.id === discountModalBooking.memberId) ||
+          m.childName.trim().toLowerCase() === discountModalBooking.childName.trim().toLowerCase()
+      );
+      if (matchedMember) {
+        onUpdateMember({
+          ...matchedMember,
+          voucherBalance: Math.max(0, (matchedMember.voucherBalance || 0) - deltaVoucher),
+        });
+      }
+    }
+
+    const adjDeposit = Math.min(editBkDeposit, calc.finalNetPrice);
+    const adjBalance = Math.max(0, calc.finalNetPrice - adjDeposit);
+
+    onUpdateBooking({
+      ...discountModalBooking,
+      basePrice: calc.basePrice,
+      discountType: editBkDiscountType,
+      discountValue: editBkDiscountType !== 'none' ? editBkDiscountValue : 0,
+      discountAmount: calc.discountAmount,
+      discountLabel: editBkDiscountType !== 'none' ? editBkDiscountLabel.trim() : undefined,
+      voucherApplied: calc.voucherApplied > 0 ? calc.voucherApplied : undefined,
+      depositAmount: adjDeposit,
+      balanceAmount: adjBalance,
+      totalPrice: calc.finalNetPrice,
+    });
+
+    setStatusMsg({
+      text: `Quota aggiornata per "${discountModalBooking.childName}": Totale Netto ${formatEuro(
+        calc.finalNetPrice
+      )}${
+        calc.discountAmount > 0
+          ? ` (Sconto -${formatEuro(calc.discountAmount)}: ${
+              editBkDiscountLabel.trim() || 'Agevolazione'
+            })`
+          : ''
+      }${calc.voucherApplied > 0 ? ` (Buono Spesa -${formatEuro(calc.voucherApplied)})` : ''}.`,
+    });
+    setDiscountModalBooking(null);
   };
 
   const handleImportBookingsExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1408,7 +1616,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
                       return (
                         <tr key={bk.id} className="hover:bg-slate-50/80 transition-colors">
                           <td className="py-2.5 px-4">
-                            <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                            <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
                               <span>{bk.childName}</span>
                               {member ? (
                                 <span
@@ -1426,6 +1634,32 @@ export const EventsView: React.FC<EventsViewProps> = ({
                                 </span>
                               )}
                             </div>
+                            {((bk.discountAmount && bk.discountAmount > 0) ||
+                              (bk.voucherApplied && bk.voucherApplied > 0)) && (
+                              <div className="flex flex-wrap items-center gap-1 mt-1">
+                                {bk.discountAmount && bk.discountAmount > 0 ? (
+                                  <span
+                                    onClick={() => openDiscountBookingModal(bk)}
+                                    className="cursor-pointer inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 text-[9px] font-bold hover:bg-indigo-100"
+                                    title="Clicca per modificare lo sconto o la dicitura per questo evento"
+                                  >
+                                    <Tag className="w-2.5 h-2.5 text-indigo-600" />
+                                    Sconto -{formatEuro(bk.discountAmount)}
+                                    {bk.discountLabel ? ` (${bk.discountLabel})` : ''}
+                                  </span>
+                                ) : null}
+                                {bk.voucherApplied && bk.voucherApplied > 0 ? (
+                                  <span
+                                    onClick={() => openDiscountBookingModal(bk)}
+                                    className="cursor-pointer inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-50 text-violet-800 border border-violet-200 text-[9px] font-bold hover:bg-violet-100"
+                                    title="Clicca per modificare il buono applicato"
+                                  >
+                                    <Ticket className="w-2.5 h-2.5 text-violet-600" />
+                                    Buono -{formatEuro(bk.voucherApplied)}
+                                  </span>
+                                ) : null}
+                              </div>
+                            )}
                             {bk.notes && (
                               <div className="text-[10px] text-slate-500 mt-0.5">{bk.notes}</div>
                             )}
@@ -1527,6 +1761,19 @@ export const EventsView: React.FC<EventsViewProps> = ({
                           <td className="py-2.5 px-4 text-center whitespace-nowrap">
                             <div className="flex items-center justify-center gap-1">
                               <button
+                                onClick={() => openDiscountBookingModal(bk)}
+                                className={`p-1.5 rounded-md transition-colors ${
+                                  (bk.discountAmount && bk.discountAmount > 0) ||
+                                  (bk.voucherApplied && bk.voucherApplied > 0)
+                                    ? 'text-indigo-700 bg-indigo-50 hover:bg-indigo-100'
+                                    : 'text-slate-500 hover:text-indigo-700 hover:bg-slate-100'
+                                }`}
+                                title="Applica o modifica Sconto per questo Evento (Quota Fissa € / %) o Buono Spesa"
+                              >
+                                <Tag className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
                                 onClick={() => openSyncMemberModalForBooking(bk)}
                                 className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-slate-100 rounded-md transition-colors"
                                 title="Vedi / Modifica dati in Anagrafica Soci e Tessera"
@@ -1540,7 +1787,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
                                   onOpenReceiptModalForBooking(bk, member);
                                 }}
                                 className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-slate-100 rounded-md transition-colors"
-                                title="Genera preventivo / ricevuta PDF"
+                                title="Genera preventivo / ricevuta PDF e Invia via Gmail"
                               >
                                 <Printer className="w-3.5 h-3.5" />
                               </button>
@@ -1630,8 +1877,8 @@ export const EventsView: React.FC<EventsViewProps> = ({
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
                   {syncExistingMember
-                    ? 'Ecco i dati attuali presenti in Anagrafica Soci. Qualsiasi modifica salvata qui aggiorna in automatico sia l\'Evento, sia l\'Anagrafica Soci, sia la Sezione Tessere.'
-                    : 'Questo iscritto non era ancora in Anagrafica Soci: i dati dell\'evento sono già precompilati qui sotto. Salvando verrà inserito automaticamente anche in Anagrafica Soci e nella Sezione Tessere.'}
+                    ? "Ecco i dati attuali presenti in Anagrafica Soci. Qualsiasi modifica salvata qui aggiorna in automatico sia l'Evento, sia l'Anagrafica Soci, sia la Sezione Tessere."
+                    : "Questo iscritto non era ancora in Anagrafica Soci: i dati dell'evento sono già precompilati qui sotto. Salvando verrà inserito automaticamente anche in Anagrafica Soci e nella Sezione Tessere."}
                 </p>
               </div>
               <button
@@ -1956,7 +2203,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
         </div>
       )}
 
-      {/* Modal Crea / Modifica Evento (con Fasce d'Età, Condizioni, Caparra e Prezzi) */}
+      {/* Modal Crea / Modifica Evento (con Fasce d'Età, Condizioni, Caparra, Sconto Predefinito e Prezzi) */}
       {isEventModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-xl w-full p-6 my-8">
@@ -2096,6 +2343,64 @@ export const EventsView: React.FC<EventsViewProps> = ({
                 </div>
               </div>
 
+              {/* Opzione Sconto / Agevolazione per questo Evento */}
+              <div className="p-3 bg-indigo-50/70 rounded-xl border border-indigo-200 space-y-2.5">
+                <div className="flex items-center gap-1.5 font-bold text-indigo-950 uppercase tracking-wider text-[10px]">
+                  <Tag className="w-3.5 h-3.5 text-indigo-700" />
+                  <span>
+                    Opzione Sconto / Copertura Quota per questo Evento (Opzionale, modificabile per ogni iscritto)
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="block text-indigo-900 font-semibold mb-1 text-[11px]">
+                      Tipo Sconto Evento
+                    </label>
+                    <select
+                      value={evDefaultDiscountType}
+                      onChange={(e) =>
+                        setEvDefaultDiscountType(e.target.value as 'none' | 'fixed' | 'percent')
+                      }
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-white"
+                    >
+                      <option value="none">Nessuno sconto predefinito</option>
+                      <option value="fixed">Quota Fissa (€)</option>
+                      <option value="percent">Percentuale (%)</option>
+                    </select>
+                  </div>
+                  {evDefaultDiscountType !== 'none' && (
+                    <>
+                      <div>
+                        <label className="block text-indigo-900 font-semibold mb-1 text-[11px]">
+                          Valore Sconto ({evDefaultDiscountType === 'percent' ? '%' : '€'})
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.5"
+                          value={evDefaultDiscountValue}
+                          onChange={(e) => setEvDefaultDiscountValue(Number(e.target.value))}
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-white font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-indigo-900 font-semibold mb-1 text-[11px]">
+                          Dicitura in Ricevuta (Salvabile)
+                        </label>
+                        <input
+                          type="text"
+                          list="saved-discount-labels-list"
+                          placeholder="Es. Quota coperta da Comune / ISEE..."
+                          value={evDefaultDiscountLabel}
+                          onChange={(e) => setEvDefaultDiscountLabel(e.target.value)}
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-white"
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
               <div>
                 <label className="block text-slate-700 font-medium mb-1">
                   Condizioni di Partecipazione, Sconti Fratelli & Equipaggiamento
@@ -2139,10 +2444,17 @@ export const EventsView: React.FC<EventsViewProps> = ({
         </div>
       )}
 
+      {/* Datalist diciture sconto salvate per riutilizzo immediato */}
+      <datalist id="saved-discount-labels-list">
+        {savedDiscountLabels.map((lbl) => (
+          <option key={lbl} value={lbl} />
+        ))}
+      </datalist>
+
       {/* Add Booking Modal */}
       {isAddBookingOpen && currentEvent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6 my-8 max-h-[92vh] overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-xl w-full p-6 my-8 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
               <h3 className="font-bold text-slate-900 text-base">
                 Iscrivi Partecipante a {currentEvent.name}
@@ -2158,7 +2470,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
             <form onSubmit={handleCreateBooking} className="space-y-4 text-xs">
               <div>
                 <label className="block text-slate-700 font-medium mb-1">
-                  Seleziona dall'Anagrafica Soci (Incrocia automaticamente tessera e allergie)
+                  Seleziona dall'Anagrafica Soci (Incrocia automaticamente tessera, allergie e buono spesa)
                 </label>
                 <select
                   value={selectedMemberId}
@@ -2169,7 +2481,11 @@ export const EventsView: React.FC<EventsViewProps> = ({
                   {members.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.childName} (Genitore: {m.parentName} - Tessera:{' '}
-                      {m.membershipCardNumber || 'N/D'})
+                      {m.membershipCardNumber || 'N/D'}
+                      {m.voucherBalance && m.voucherBalance > 0
+                        ? ` · Buono disp. € ${m.voucherBalance.toFixed(2)}`
+                        : ''}
+                      )
                     </option>
                   ))}
                 </select>
@@ -2233,6 +2549,167 @@ export const EventsView: React.FC<EventsViewProps> = ({
                 </label>
               )}
 
+              {/* SCONTO EVENTO (QUOTA FISSA € O PERCENTUALE %) & BUONO SPESA SOCIO */}
+              <div className="p-3.5 bg-indigo-50/70 rounded-xl border border-indigo-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-bold text-indigo-950 uppercase tracking-wider text-[10px]">
+                    <Tag className="w-3.5 h-3.5 text-indigo-700" />
+                    <span>
+                      Sconto Evento (ISEE / Enti / Fratelli) & Compensazione Buono Spesa
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-indigo-900">
+                    Quota Base: {formatEuro(bookingBasePrice)}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="block text-indigo-900 font-semibold mb-1 text-[11px]">
+                      Tipo Sconto per questo Evento
+                    </label>
+                    <select
+                      value={bookingDiscountType}
+                      onChange={(e) => {
+                        const nextType = e.target.value as 'none' | 'fixed' | 'percent';
+                        setBookingDiscountType(nextType);
+                        const nextVal = nextType === 'none' ? 0 : bookingDiscountValue;
+                        if (nextType === 'none') setBookingDiscountValue(0);
+                        applyRecalculatedBookingAmounts(
+                          bookingBasePrice,
+                          nextType,
+                          nextVal,
+                          bookingVoucherUsed,
+                          depositAmount
+                        );
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-white"
+                    >
+                      <option value="none">Nessuno sconto</option>
+                      <option value="fixed">Quota Fissa (€)</option>
+                      <option value="percent">Percentuale (%)</option>
+                    </select>
+                  </div>
+
+                  {bookingDiscountType !== 'none' && (
+                    <>
+                      <div>
+                        <label className="block text-indigo-900 font-semibold mb-1 text-[11px]">
+                          Valore Sconto ({bookingDiscountType === 'percent' ? '%' : '€'})
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.5"
+                          value={bookingDiscountValue}
+                          onChange={(e) => {
+                            const val = Math.max(0, Number(e.target.value));
+                            setBookingDiscountValue(val);
+                            applyRecalculatedBookingAmounts(
+                              bookingBasePrice,
+                              bookingDiscountType,
+                              val,
+                              bookingVoucherUsed,
+                              depositAmount
+                            );
+                          }}
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-white font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-indigo-900 font-semibold mb-1 text-[11px]">
+                          Buono Spesa da Usare (€)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.5"
+                          value={bookingVoucherUsed}
+                          onChange={(e) => {
+                            const val = Math.max(0, Number(e.target.value));
+                            setBookingVoucherUsed(val);
+                            applyRecalculatedBookingAmounts(
+                              bookingBasePrice,
+                              bookingDiscountType,
+                              bookingDiscountValue,
+                              val,
+                              depositAmount
+                            );
+                          }}
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-violet-200 bg-white font-mono font-bold text-violet-900"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {bookingDiscountType === 'none' && (
+                    <div className="sm:col-span-2">
+                      <label className="block text-violet-900 font-semibold mb-1 text-[11px]">
+                        Usa Buono Spesa Socio (€)
+                        {selectedMemberId ? (() => {
+                          const m = members.find((mem) => mem.id === selectedMemberId);
+                          return m?.voucherBalance ? ` — Disponibili: € ${m.voucherBalance.toFixed(2)}` : '';
+                        })() : ''}
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        value={bookingVoucherUsed}
+                        onChange={(e) => {
+                          const val = Math.max(0, Number(e.target.value));
+                          setBookingVoucherUsed(val);
+                          applyRecalculatedBookingAmounts(
+                            bookingBasePrice,
+                            bookingDiscountType,
+                            bookingDiscountValue,
+                            val,
+                            depositAmount
+                          );
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-violet-200 bg-white font-mono font-bold text-violet-900"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {bookingDiscountType !== 'none' && (
+                  <div className="space-y-1.5">
+                    <label className="block text-indigo-900 font-semibold text-[11px]">
+                      Dicitura Sconto / Copertura Quota per la Ricevuta (resta salvata tra le selezionabili)
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <select
+                        value={
+                          savedDiscountLabels.includes(bookingDiscountLabel)
+                            ? bookingDiscountLabel
+                            : ''
+                        }
+                        onChange={(e) => {
+                          if (e.target.value) setBookingDiscountLabel(e.target.value);
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-white text-[11px]"
+                      >
+                        <option value="">-- Scegli dicitura salvata o scrivi a fianco --</option>
+                        {savedDiscountLabels.map((lbl) => (
+                          <option key={lbl} value={lbl}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        list="saved-discount-labels-list"
+                        placeholder="Oppure scrivi nuova dicitura (es. Contributo Associazione X)"
+                        value={bookingDiscountLabel}
+                        onChange={(e) => setBookingDiscountLabel(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-white text-[11px]"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
                 <div>
                   <label className="block text-slate-700 font-medium mb-1">
@@ -2241,7 +2718,17 @@ export const EventsView: React.FC<EventsViewProps> = ({
                   <input
                     type="number"
                     value={depositAmount}
-                    onChange={(e) => setDepositAmount(Number(e.target.value))}
+                    onChange={(e) => {
+                      const nextDep = Number(e.target.value);
+                      setDepositAmount(nextDep);
+                      applyRecalculatedBookingAmounts(
+                        bookingBasePrice,
+                        bookingDiscountType,
+                        bookingDiscountValue,
+                        bookingVoucherUsed,
+                        nextDep
+                      );
+                    }}
                     className="w-full px-3 py-1.5 rounded-lg border border-slate-200 font-mono bg-white"
                   />
                   <label className="flex items-center gap-2 mt-2 text-slate-700">
@@ -2256,7 +2743,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
 
                 <div>
                   <label className="block text-slate-700 font-medium mb-1">
-                    Importo Saldo (€)
+                    Importo Saldo Netto (€)
                   </label>
                   <input
                     type="number"
@@ -2359,6 +2846,185 @@ export const EventsView: React.FC<EventsViewProps> = ({
                   className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-semibold"
                 >
                   Conferma Iscrizione
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Rapido Sconto Evento (ISEE / Enti / Quota Fissa o %) & Buono Spesa */}
+      {discountModalBooking && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6 my-8">
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100 mb-4">
+              <div>
+                <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-900 text-[10px] font-bold uppercase">
+                  Sconto Evento & Buono Spesa
+                </span>
+                <h3 className="font-bold text-slate-900 text-base mt-1">
+                  {discountModalBooking.childName} · {discountModalBooking.eventName}
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Imposta uno sconto in Quota Fissa (€) o Percentuale (%) valido per questo evento e scegli o inserisci la dicitura che comparirà anche nella ricevuta.
+                </p>
+              </div>
+              <button
+                onClick={() => setDiscountModalBooking(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveBookingDiscountAndVoucher} className="space-y-4 text-xs">
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    Quota Base Evento (€)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.5"
+                    value={editBkBasePrice}
+                    onChange={(e) => setEditBkBasePrice(Math.max(0, Number(e.target.value)))}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Tipo Sconto</label>
+                  <select
+                    value={editBkDiscountType}
+                    onChange={(e) => {
+                      const t = e.target.value as 'none' | 'fixed' | 'percent';
+                      setEditBkDiscountType(t);
+                      if (t === 'none') setEditBkDiscountValue(0);
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white font-semibold"
+                  >
+                    <option value="none">Nessuno sconto</option>
+                    <option value="fixed">Quota Fissa (€)</option>
+                    <option value="percent">Percentuale (%)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">
+                    Valore Sconto ({editBkDiscountType === 'percent' ? '%' : '€'})
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.5"
+                    disabled={editBkDiscountType === 'none'}
+                    value={editBkDiscountValue}
+                    onChange={(e) => setEditBkDiscountValue(Math.max(0, Number(e.target.value)))}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono font-bold disabled:bg-slate-100"
+                  />
+                </div>
+              </div>
+
+              {editBkDiscountType !== 'none' && (
+                <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-200 space-y-2">
+                  <label className="block text-indigo-950 font-bold text-[11px]">
+                    Dicitura Sconto / Copertura Quota per la Ricevuta (resta salvata tra le selezionabili per altri soci ed eventi)
+                  </label>
+                  <select
+                    value={savedDiscountLabels.includes(editBkDiscountLabel) ? editBkDiscountLabel : ''}
+                    onChange={(e) => {
+                      if (e.target.value) setEditBkDiscountLabel(e.target.value);
+                    }}
+                    className="w-full px-3 py-1.5 rounded-lg border border-indigo-200 bg-white"
+                  >
+                    <option value="">-- Seleziona una dicitura salvata --</option>
+                    {savedDiscountLabels.map((lbl) => (
+                      <option key={lbl} value={lbl}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    list="saved-discount-labels-list"
+                    placeholder="Oppure scrivi una nuova dicitura (es. Contributo Associazione X / Riduzione ISEE)"
+                    value={editBkDiscountLabel}
+                    onChange={(e) => setEditBkDiscountLabel(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded-lg border border-indigo-200 bg-white"
+                  />
+                </div>
+              )}
+
+              <div className="p-3 bg-violet-50 rounded-xl border border-violet-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-violet-950 font-bold text-[11px] flex items-center gap-1.5">
+                    <Ticket className="w-3.5 h-3.5 text-violet-700" />
+                    <span>Buono Spesa applicato a questo evento (€)</span>
+                  </label>
+                  {(() => {
+                    const m = members.find(
+                      (mem) =>
+                        (discountModalBooking.memberId && mem.id === discountModalBooking.memberId) ||
+                        mem.childName.trim().toLowerCase() ===
+                          discountModalBooking.childName.trim().toLowerCase()
+                    );
+                    return m && (m.voucherBalance || 0) > 0 ? (
+                      <span className="text-[10px] font-mono font-bold text-violet-800">
+                        Credito Socio in Anagrafica: {formatEuro(m.voucherBalance || 0)}
+                      </span>
+                    ) : null;
+                  })()}
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.5"
+                  value={editBkVoucherUsed}
+                  onChange={(e) => setEditBkVoucherUsed(Math.max(0, Number(e.target.value)))}
+                  className="w-full px-3 py-1.5 rounded-lg border border-violet-200 bg-white font-mono font-bold text-violet-900"
+                />
+              </div>
+
+              {(() => {
+                const preview = calculateDiscountedEventPrice({
+                  basePrice: editBkBasePrice,
+                  discountType: editBkDiscountType,
+                  discountValue: editBkDiscountValue,
+                  voucherUsed: editBkVoucherUsed,
+                });
+                return (
+                  <div className="p-3 bg-slate-900 text-white rounded-xl flex items-center justify-between text-xs">
+                    <div className="space-y-0.5">
+                      <div className="text-slate-400 text-[10px]">
+                        Lordo: {formatEuro(preview.basePrice)}
+                        {preview.discountAmount > 0
+                          ? ` · Sconto: -${formatEuro(preview.discountAmount)}`
+                          : ''}
+                        {preview.voucherApplied > 0
+                          ? ` · Buono: -${formatEuro(preview.voucherApplied)}`
+                          : ''}
+                      </div>
+                      <div className="font-bold">Totale Netto Evento per il Socio</div>
+                    </div>
+                    <div className="text-lg font-mono font-bold text-emerald-400">
+                      {formatEuro(preview.finalNetPrice)}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="pt-2 border-t border-slate-100 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDiscountModalBooking(null)}
+                  className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg font-medium"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-700 hover:bg-indigo-800 text-white rounded-lg font-semibold"
+                >
+                  Salva Sconto / Buono
                 </button>
               </div>
             </form>

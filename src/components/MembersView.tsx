@@ -22,6 +22,11 @@ import {
   ExternalLink,
   Save,
   History,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  FileSignature,
+  Ticket,
 } from 'lucide-react';
 import {
   Member,
@@ -50,8 +55,15 @@ import {
   updateMembersGoogleSheet,
 } from '../services/googleWorkspace';
 import { GoogleFormBuilderModal } from './GoogleFormBuilderModal';
+import { MemberDataConsentModal } from './MemberDataConsentModal';
 import { getInsuranceDisplayLabel } from '../utils/digitalCard';
 import { TransactionDateSelector } from './TransactionDateSelector';
+import {
+  formatEuro,
+  MemberSortField,
+  SortDirection,
+  sortMembersList,
+} from '../utils/finance';
 
 interface MembersViewProps {
   members: Member[];
@@ -87,7 +99,10 @@ export const MembersView: React.FC<MembersViewProps> = ({
   const [selectedInsurance, setSelectedInsurance] = useState<string>('ALL');
   const [selectedGroup, setSelectedGroup] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
+  const [sortField, setSortField] = useState<MemberSortField>('childName');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [editingMember, setEditingMember] = useState<Member | null>(null);
+  const [consentModalMember, setConsentModalMember] = useState<Member | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [importBannerMsg, setImportBannerMsg] = useState<{
     type: 'ok' | 'err';
@@ -96,6 +111,27 @@ export const MembersView: React.FC<MembersViewProps> = ({
   const [isSyncingGoogle, setIsSyncingGoogle] = useState(false);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [customFormIdInput, setCustomFormIdInput] = useState(profile.membersGoogleFormId || '');
+
+  // Primo tap ordina A->Z (asc), secondo tap sulla stessa colonna inverte Z->A (desc)
+  const handleToggleSort = (field: MemberSortField) => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const renderSortIcon = (field: MemberSortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-70 inline ml-1" />;
+    }
+    return sortDirection === 'asc' ? (
+      <ArrowUp className="w-3 h-3 text-emerald-700 inline ml-1" />
+    ) : (
+      <ArrowDown className="w-3 h-3 text-emerald-700 inline ml-1" />
+    );
+  };
 
   // Card Renewal / Issue Modal State
   const [renewalMember, setRenewalMember] = useState<Member | null>(null);
@@ -142,6 +178,8 @@ export const MembersView: React.FC<MembersViewProps> = ({
     allergies: '',
     notesConditions: '',
     formSignedAndArchived: false,
+    voucherBalance: 0,
+    voucherNotes: '',
     needsLevelUp: false,
     confirmationEmailSent: false,
   });
@@ -205,14 +243,17 @@ export const MembersView: React.FC<MembersViewProps> = ({
     }
   };
 
-  // Filtered members for registry view
+  // Filtered & sorted members for registry view
   const filteredMembers = useMemo(() => {
-    return members.filter((m) => {
+    const filtered = members.filter((m) => {
       if (selectedInsurance !== 'ALL' && m.insuranceType !== selectedInsurance) return false;
       if (selectedGroup !== 'ALL' && m.group !== selectedGroup) return false;
       if (selectedStatus === 'PAID' && !m.isPaid) return false;
       if (selectedStatus === 'UNPAID' && m.isPaid) return false;
       if (selectedStatus === 'TESSERA_365' && m.cardValidityType !== 'tessera_365') return false;
+      if (selectedStatus === 'WITH_VOUCHER' && !(m.voucherBalance && m.voucherBalance > 0))
+        return false;
+      if (selectedStatus === 'UNSIGNED_FORM' && m.formSignedAndArchived) return false;
       if (selectedStatus === 'EMAIL_PENDING' && m.confirmationEmailSent !== false) return false;
       if (selectedStatus === 'MEDICAL' && !m.allergies && !m.notesConditions) return false;
       if (selectedStatus === 'NO_PHOTO' && m.photoConsent) return false;
@@ -228,7 +269,8 @@ export const MembersView: React.FC<MembersViewProps> = ({
       }
       return true;
     });
-  }, [members, selectedInsurance, selectedGroup, selectedStatus, search]);
+    return sortMembersList(filtered, sortField, sortDirection);
+  }, [members, selectedInsurance, selectedGroup, selectedStatus, search, sortField, sortDirection]);
 
   // Members needing card renewal or new card
   const membersNeedingRenewal = useMemo(() => {
@@ -838,12 +880,42 @@ export const MembersView: React.FC<MembersViewProps> = ({
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
-                    <th className="py-3 px-4">Socio (Bimbo/a)</th>
-                    <th className="py-3 px-4">Genitore</th>
-                    <th className="py-3 px-4">Tessera Attuale</th>
-                    <th className="py-3 px-4">Formula Validità</th>
-                    <th className="py-3 px-4 text-center">Scadenza Attuale</th>
-                    <th className="py-3 px-4 text-center">Stato</th>
+                    <th
+                      onClick={() => handleToggleSort('childName')}
+                      className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      Socio (Bimbo/a) {renderSortIcon('childName')}
+                    </th>
+                    <th
+                      onClick={() => handleToggleSort('parentName')}
+                      className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      Genitore {renderSortIcon('parentName')}
+                    </th>
+                    <th
+                      onClick={() => handleToggleSort('membershipCardNumber')}
+                      className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      Tessera Attuale {renderSortIcon('membershipCardNumber')}
+                    </th>
+                    <th
+                      onClick={() => handleToggleSort('cardValidityType')}
+                      className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      Formula Validità {renderSortIcon('cardValidityType')}
+                    </th>
+                    <th
+                      onClick={() => handleToggleSort('expiryDate')}
+                      className="py-3 px-4 text-center cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      Scadenza Attuale {renderSortIcon('expiryDate')}
+                    </th>
+                    <th
+                      onClick={() => handleToggleSort('isPaid')}
+                      className="py-3 px-4 text-center cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      Stato {renderSortIcon('isPaid')}
+                    </th>
                     <th className="py-3 px-4 text-right">Azione Rinnovo / Nuova Tessera</th>
                   </tr>
                 </thead>
@@ -856,7 +928,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    members.map((m) => {
+                    sortMembersList(members, sortField, sortDirection).map((m) => {
                       const exp = parseAnyDate(m.expiryDate);
                       const days = exp ? diffDays(exp) : -1;
                       const isExpired = days < 0;
@@ -991,6 +1063,8 @@ export const MembersView: React.FC<MembersViewProps> = ({
                 <option value="PAID">Tessera Pagata</option>
                 <option value="UNPAID">Da Pagare / In Attesa</option>
                 <option value="TESSERA_365">Con Tessera 365</option>
+                <option value="WITH_VOUCHER">Con Buono Spesa Attivo</option>
+                <option value="UNSIGNED_FORM">Modulo Firma da Ricevere</option>
                 <option value="EMAIL_PENDING">Email Conferma NON Inviata</option>
                 <option value="MEDICAL">Con Allergie / Note Mediche</option>
                 <option value="NO_PHOTO">Senza Consenso Foto</option>
@@ -1016,13 +1090,103 @@ export const MembersView: React.FC<MembersViewProps> = ({
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
-                    <th className="py-3 px-4">Bimbo/a & Data Nascita</th>
-                    <th className="py-3 px-4">Gruppo</th>
-                    <th className="py-3 px-4">Genitore & Contatti</th>
-                    <th className="py-3 px-4">Tessera, Validità & Scadenza</th>
-                    <th className="py-3 px-4 text-center">Quota & Email</th>
-                    <th className="py-3 px-4">Allergie, Note & Foto</th>
-                    <th className="py-3 px-4 text-center">Modifica / Rinnova / Ricevuta</th>
+                    <th
+                      onClick={() => handleToggleSort('childName')}
+                      title="Clicca per ordinare per Nome Bimbo/a (1° tap A→Z, 2° tap Z→A)"
+                      className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      <span className="inline-flex items-center">
+                        Bimbo/a & Data Nascita {renderSortIcon('childName')}
+                      </span>
+                    </th>
+                    <th
+                      onClick={() => handleToggleSort('group')}
+                      title="Clicca per ordinare per Gruppo d'Età (1° tap crescente, 2° tap decrescente)"
+                      className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      <span className="inline-flex items-center">
+                        Gruppo {renderSortIcon('group')}
+                      </span>
+                    </th>
+                    <th
+                      onClick={() => handleToggleSort('parentName')}
+                      title="Clicca per ordinare per Genitore (1° tap A→Z, 2° tap Z→A)"
+                      className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                    >
+                      <span className="inline-flex items-center">
+                        Genitore & Contatti {renderSortIcon('parentName')}
+                      </span>
+                    </th>
+                    <th className="py-2.5 px-4 select-none">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort('membershipCardNumber')}
+                          title="Ordina per Numero di Tessera (1° tap A→Z, 2° tap Z→A)"
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded uppercase text-[10px] font-bold transition ${
+                            sortField === 'membershipCardNumber'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'hover:bg-slate-200/70 text-slate-600'
+                          }`}
+                        >
+                          N° Tessera {renderSortIcon('membershipCardNumber')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort('insuranceType')}
+                          title="Ordina per Tipo Polizza (Base, Summer, Gold, Platinum)"
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded uppercase text-[10px] font-bold transition ${
+                            sortField === 'insuranceType'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'hover:bg-slate-200/70 text-slate-600'
+                          }`}
+                        >
+                          Tipo {renderSortIcon('insuranceType')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort('expiryDate')}
+                          title="Ordina per Data di Scadenza Tessera"
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded uppercase text-[10px] font-bold transition ${
+                            sortField === 'expiryDate'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'hover:bg-slate-200/70 text-slate-600'
+                          }`}
+                        >
+                          Scad. {renderSortIcon('expiryDate')}
+                        </button>
+                      </div>
+                    </th>
+                    <th className="py-2.5 px-4 text-center select-none">
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort('isPaid')}
+                          title="Ordina per Stato Pagamento Quota"
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded uppercase text-[10px] font-bold transition ${
+                            sortField === 'isPaid'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'hover:bg-slate-200/70 text-slate-600'
+                          }`}
+                        >
+                          Quota {renderSortIcon('isPaid')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleSort('voucherBalance')}
+                          title="Ordina per Credito Buono Spesa Disponibile"
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded uppercase text-[10px] font-bold transition ${
+                            sortField === 'voucherBalance'
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'hover:bg-slate-200/70 text-slate-600'
+                          }`}
+                        >
+                          Buono {renderSortIcon('voucherBalance')}
+                        </button>
+                      </div>
+                    </th>
+                    <th className="py-3 px-4">Allergie, Note & Firma</th>
+                    <th className="py-3 px-4 text-center">Azioni Rapide</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1151,6 +1315,22 @@ export const MembersView: React.FC<MembersViewProps> = ({
                                 <Send className="w-2.5 h-2.5" />
                                 {emailSent ? 'Email Inviata ✓' : 'Email da Inviare !'}
                               </button>
+
+                              {(m.voucherBalance || 0) > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingMember({ ...m })}
+                                  title={
+                                    m.voucherNotes
+                                      ? `Buono Spesa: ${m.voucherNotes}`
+                                      : 'Buono spesa utilizzabile per compensare i costi delle attività'
+                                  }
+                                  className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-300 hover:bg-teal-100 transition"
+                                >
+                                  <Ticket className="w-2.5 h-2.5 text-teal-700" />
+                                  <span>Buono: {formatEuro(m.voucherBalance || 0)}</span>
+                                </button>
+                              )}
                             </div>
                           </td>
 
@@ -1166,18 +1346,42 @@ export const MembersView: React.FC<MembersViewProps> = ({
                                 {m.notesConditions}
                               </div>
                             )}
-                            {!m.photoConsent && (
-                              <span className="inline-block mt-0.5 text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded-sm border border-rose-200">
-                                NO FOTO / SOCIAL
-                              </span>
-                            )}
-                            {!hasAllergies && !hasConditions && m.photoConsent && (
-                              <span className="text-slate-400 text-[11px]">Regolare · Foto OK</span>
-                            )}
+                            <div className="flex flex-wrap items-center gap-1 mt-1">
+                              {!m.photoConsent && (
+                                <span className="inline-block text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded-sm border border-rose-200">
+                                  NO FOTO
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setConsentModalMember(m)}
+                                className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-sm border transition ${
+                                  m.formSignedAndArchived
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                                    : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                                }`}
+                                title="Clicca per aprire, scaricare in PDF o inviare via Gmail il Modulo Riepilogo Dati da Firmare"
+                              >
+                                <FileSignature className="w-2.5 h-2.5" />
+                                <span>
+                                  {m.formSignedAndArchived ? 'Modulo Firmato ✓' : 'Modulo da Firmare'}
+                                </span>
+                              </button>
+                            </div>
                           </td>
 
                           <td className="py-3 px-4 text-center whitespace-nowrap">
                             <div className="flex items-center justify-center gap-1">
+                              <button
+                                id={`btn-member-consent-pdf-${m.id}`}
+                                type="button"
+                                onClick={() => setConsentModalMember(m)}
+                                className="px-2 py-1 text-[10px] font-bold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors flex items-center gap-1"
+                                title="Scarica PDF Riepilogo Dati da Firmare o invia al genitore con Gmail"
+                              >
+                                <FileSignature className="w-3.5 h-3.5 text-blue-700" />
+                                <span>Modulo Firma</span>
+                              </button>
                               {onOpenDigitalCardModal && (
                                 <button
                                   id={`btn-member-digital-card-${m.id}`}
@@ -1193,7 +1397,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
                               <button
                                 onClick={() => setEditingMember({ ...m })}
                                 className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-slate-100 rounded-lg transition-colors"
-                                title="Modifica Anagrafica Completa"
+                                title="Modifica Anagrafica Completa e Buono Spesa"
                               >
                                 <Edit3 className="w-4 h-4" />
                               </button>
@@ -1210,7 +1414,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
                                   onSelectMemberForReceipt(m);
                                 }}
                                 className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-slate-100 rounded-lg transition-colors"
-                                title="Emetti Ricevuta / Preventivo PDF"
+                                title="Emetti Ricevuta / Preventivo PDF o invia via Gmail"
                               >
                                 <Receipt className="w-4 h-4" />
                               </button>
@@ -1647,8 +1851,55 @@ export const MembersView: React.FC<MembersViewProps> = ({
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              {/* 5. Buono Spesa / Credito Attività (NO Sconti fissi in anagrafica: gli sconti si applicano nei singoli Eventi e Ricevute) */}
+              <div className="p-3.5 bg-teal-50/70 rounded-xl space-y-2.5 border border-teal-200">
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold text-teal-950 uppercase tracking-wide text-[10px] flex items-center gap-1.5">
+                    <Ticket className="w-3.5 h-3.5 text-teal-700" />
+                    <span>5. Buono Spesa / Credito da Spendere nelle Attività</span>
+                  </div>
+                  <span className="text-[10px] text-teal-700">
+                    Utilizzabile in tutto o in parte per compensare quote eventi/attività
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-teal-900 block mb-1 font-semibold">
+                      Credito Buono Disponibile (€)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.50"
+                      min="0"
+                      value={editingMember.voucherBalance ?? 0}
+                      onChange={(e) =>
+                        setEditingMember({
+                          ...editingMember,
+                          voucherBalance: Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                      className="w-full px-3 py-1.5 bg-white border border-teal-300 rounded-lg font-mono font-bold text-teal-900"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-teal-900 block mb-1 font-medium">
+                      Causale / Note Buono Spesa (opzionale)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Es. Recupero uscita annullata per pioggia / Bonus famiglia..."
+                      value={editingMember.voucherNotes || ''}
+                      onChange={(e) =>
+                        setEditingMember({ ...editingMember, voucherNotes: e.target.value })
+                      }
+                      className="w-full px-3 py-1.5 bg-white border border-teal-200 rounded-lg"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
@@ -1665,6 +1916,20 @@ export const MembersView: React.FC<MembersViewProps> = ({
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Elimina Socio</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const m = { ...editingMember };
+                      onUpdateMember(m);
+                      setEditingMember(null);
+                      setConsentModalMember(m);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200"
+                  >
+                    <FileSignature className="w-3.5 h-3.5" />
+                    <span>Modulo Riepilogo da Firmare</span>
                   </button>
 
                   <button
@@ -2251,6 +2516,39 @@ export const MembersView: React.FC<MembersViewProps> = ({
                     />
                   </div>
                 )}
+                {/* Buono Spesa iniziale opzionale */}
+                <div className="p-3 bg-teal-50/70 border border-teal-200 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-teal-900 font-semibold mb-1">
+                      Buono Spesa Disponibile (€)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.50"
+                      min="0"
+                      value={formData.voucherBalance ?? 0}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          voucherBalance: Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                      className="w-full px-3 py-1.5 bg-white rounded-lg border border-teal-300 font-mono font-bold text-teal-900"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-teal-900 font-medium mb-1">
+                      Note Buono Spesa (opzionale)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Es. Buono recupero attività / Bonus famiglia..."
+                      value={formData.voucherNotes || ''}
+                      onChange={(e) => setFormData({ ...formData, voucherNotes: e.target.value })}
+                      className="w-full px-3 py-1.5 bg-white rounded-lg border border-teal-200"
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
@@ -2272,6 +2570,23 @@ export const MembersView: React.FC<MembersViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modulo Riepilogo Dati, Consenso Foto & Privacy da Firmare (Download PDF + Invio Gmail) */}
+      <MemberDataConsentModal
+        isOpen={!!consentModalMember}
+        onClose={() => setConsentModalMember(null)}
+        member={
+          consentModalMember
+            ? members.find((m) => m.id === consentModalMember.id) || consentModalMember
+            : null
+        }
+        profile={profile}
+        onUpdateMember={(updated) => {
+          onUpdateMember(updated);
+          setConsentModalMember(updated);
+        }}
+        onUpdateProfile={onUpdateProfile}
+      />
 
       {/* Custom Google Form Field Builder Modal */}
       <GoogleFormBuilderModal

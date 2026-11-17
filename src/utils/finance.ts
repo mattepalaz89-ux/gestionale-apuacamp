@@ -1,4 +1,12 @@
-import { CashTransaction, CashCategory, EventItem, EventBooking } from '../types';
+import {
+  CashTransaction,
+  CashCategory,
+  EventItem,
+  EventBooking,
+  Member,
+  EventDiscountType,
+  ReceiptLineItem,
+} from '../types';
 
 export interface MonthlyCashFlow {
   monthKey: string; // e.g. "2026-01"
@@ -215,3 +223,207 @@ export function calculateEventFinancials(event: EventItem, bookings: EventBookin
     targetStaff,
   };
 }
+
+// ============================================================================
+// SORTING SOCI & TESSERE (A->Z / Z->A PER INTESTAZIONE TABELLA)
+// ============================================================================
+
+export type MemberSortField =
+  | 'childName'
+  | 'parentName'
+  | 'group'
+  | 'membershipCardNumber'
+  | 'insuranceType'
+  | 'cardValidityType'
+  | 'expiryDate'
+  | 'voucherBalance'
+  | 'isPaid';
+
+export type SortDirection = 'asc' | 'desc';
+
+function parseSortableDateVal(dateStr?: string): number {
+  if (!dateStr) return 0;
+  const s = dateStr.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return new Date(s).getTime() || 0;
+  }
+  const m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (m) {
+    return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])).getTime() || 0;
+  }
+  return 0;
+}
+
+const GROUP_ORDER: Record<string, number> = {
+  '3-6': 1,
+  '6-11': 2,
+  '11-14': 3,
+};
+
+const INSURANCE_ORDER: Record<string, number> = {
+  Base: 1,
+  Summer: 2,
+  Gold: 3,
+  Platinum: 4,
+};
+
+export function sortMembersList(
+  members: Member[],
+  field: MemberSortField,
+  direction: SortDirection = 'asc'
+): Member[] {
+  const factor = direction === 'asc' ? 1 : -1;
+  return [...members].sort((a, b) => {
+    let cmp = 0;
+    switch (field) {
+      case 'childName':
+        cmp = (a.childName || '').localeCompare(b.childName || '', 'it', {
+          sensitivity: 'base',
+        });
+        break;
+      case 'parentName':
+        cmp = (a.parentName || '').localeCompare(b.parentName || '', 'it', {
+          sensitivity: 'base',
+        });
+        break;
+      case 'group':
+        cmp = (GROUP_ORDER[a.group] || 99) - (GROUP_ORDER[b.group] || 99);
+        break;
+      case 'membershipCardNumber':
+        cmp = (a.membershipCardNumber || '').localeCompare(
+          b.membershipCardNumber || '',
+          'it',
+          { numeric: true, sensitivity: 'base' }
+        );
+        break;
+      case 'insuranceType':
+        cmp =
+          (INSURANCE_ORDER[a.insuranceType] || 0) -
+          (INSURANCE_ORDER[b.insuranceType] || 0);
+        break;
+      case 'cardValidityType':
+        cmp = (a.cardValidityType || 'solare').localeCompare(
+          b.cardValidityType || 'solare',
+          'it'
+        );
+        break;
+      case 'expiryDate':
+        cmp = parseSortableDateVal(a.expiryDate) - parseSortableDateVal(b.expiryDate);
+        break;
+      case 'voucherBalance':
+        cmp = (a.voucherBalance || 0) - (b.voucherBalance || 0);
+        break;
+      case 'isPaid':
+        cmp = (a.isPaid ? 1 : 0) - (b.isPaid ? 1 : 0);
+        break;
+      default:
+        cmp = 0;
+    }
+    if (cmp === 0) {
+      return (a.childName || '').localeCompare(b.childName || '', 'it', {
+        sensitivity: 'base',
+      });
+    }
+    return cmp * factor;
+  });
+}
+
+// ============================================================================
+// SCONTI EVENTO (QUOTA FISSA € O PERCENTUALE %) + BUONI SPESA & DICITURE SALVABILI
+// ============================================================================
+
+export const DEFAULT_SAVED_DISCOUNT_LABELS: string[] = [
+  'Riduzione fascia ISEE agevolata',
+  'Quota coperta da Comune / Ente Pubblico',
+  'Contributo coperto da Associazione Partner / Fondazione',
+  'Sconto Fratelli / Sorelle iscritti',
+  'Borsa Sportiva / Fondo Solidarietà ASD',
+];
+
+export function mergeSavedDiscountLabels(
+  existingLabels: string[] | undefined,
+  newLabel?: string
+): string[] {
+  const base =
+    existingLabels && existingLabels.length > 0
+      ? [...existingLabels]
+      : [...DEFAULT_SAVED_DISCOUNT_LABELS];
+  const trimmed = (newLabel || '').trim();
+  if (!trimmed) return base;
+  const alreadyPresent = base.some((l) => l.trim().toLowerCase() === trimmed.toLowerCase());
+  if (!alreadyPresent) {
+    return [trimmed, ...base];
+  }
+  return base;
+}
+
+export function calculateDiscountedEventPrice(params: {
+  basePrice: number;
+  discountType?: EventDiscountType;
+  discountValue?: number;
+  voucherUsed?: number;
+}): {
+  basePrice: number;
+  discountAmount: number;
+  afterDiscountPrice: number;
+  voucherApplied: number;
+  finalNetPrice: number;
+} {
+  const base = Math.max(0, round2(params.basePrice || 0));
+  const dType = params.discountType || 'none';
+  const dVal = Math.max(0, Number(params.discountValue) || 0);
+
+  let discountAmount = 0;
+  if (dType === 'fixed') {
+    discountAmount = Math.min(base, round2(dVal));
+  } else if (dType === 'percent') {
+    const pct = Math.min(100, dVal);
+    discountAmount = round2((base * pct) / 100);
+  }
+
+  const afterDiscountPrice = Math.max(0, round2(base - discountAmount));
+  const rawVoucher = Math.max(0, round2(params.voucherUsed || 0));
+  const voucherApplied = Math.min(afterDiscountPrice, rawVoucher);
+  const finalNetPrice = Math.max(0, round2(afterDiscountPrice - voucherApplied));
+
+  return {
+    basePrice: base,
+    discountAmount,
+    afterDiscountPrice,
+    voucherApplied,
+    finalNetPrice,
+  };
+}
+
+export function calculateMultiItemReceiptTotals(params: {
+  items: ReceiptLineItem[];
+  discountType?: EventDiscountType;
+  discountValue?: number;
+  voucherUsed?: number;
+}): {
+  enabledItems: ReceiptLineItem[];
+  grossTotal: number;
+  discountAmount: number;
+  voucherApplied: number;
+  netTotal: number;
+} {
+  const enabledItems = (params.items || []).filter((i) => i.enabled);
+  const grossTotal = round2(
+    enabledItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+  );
+  const calc = calculateDiscountedEventPrice({
+    basePrice: grossTotal,
+    discountType: params.discountType,
+    discountValue: params.discountValue,
+    voucherUsed: params.voucherUsed,
+  });
+
+  return {
+    enabledItems,
+    grossTotal: calc.basePrice,
+    discountAmount: calc.discountAmount,
+    voucherApplied: calc.voucherApplied,
+    netTotal: calc.finalNetPrice,
+  };
+}
+

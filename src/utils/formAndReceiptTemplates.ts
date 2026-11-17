@@ -1,10 +1,14 @@
 import {
   AssociationProfile,
+  EmailTemplateConfig,
+  EmailTemplateId,
   GoogleFormFieldConfig,
   GoogleFormTargetArea,
   ImageOverlayConfig,
+  Member,
   ReceiptDynamicField,
   ReceiptLayoutTemplateId,
+  ReceiptLineItem,
   ReceiptTemplateConfig,
 } from '../types';
 import { formatEuro } from './finance';
@@ -411,9 +415,14 @@ export interface ReceiptPlaceholderContext {
   cf_socio?: string;
   indirizzo_socio?: string;
   tessera?: string;
+  scadenza_tessera?: string;
   assicurazione?: string;
   attivita?: string;
   importo?: number | string;
+  totale_lordo?: string;
+  sconto_dicitura?: string;
+  sconto_importo?: string;
+  buono_importo?: string;
   metodo_pagamento?: string;
   data?: string;
   numero_ricevuta?: string;
@@ -435,9 +444,14 @@ export const DYNAMIC_PLACEHOLDER_TOKENS: {
   { token: '{{cf_genitore}}', label: 'C.F. Genitore', example: 'BNCLRA82M45F205Z' },
   { token: '{{cf_socio}}', label: 'C.F. Socio / Minore', example: 'RSSMRC16D12F205K' },
   { token: '{{tessera}}', label: 'N° Tessera Associativa', example: 'AC-2027-042' },
+  { token: '{{scadenza_tessera}}', label: 'Scadenza Tessera', example: '31/12/2027' },
   { token: '{{assicurazione}}', label: 'Polizza Assicurativa', example: 'Gold' },
-  { token: '{{attivita}}', label: 'Causale / Evento', example: 'Summer Camp Rifugio' },
-  { token: '{{importo}}', label: 'Importo Formattato', example: '€ 120,00' },
+  { token: '{{attivita}}', label: 'Causale / Evento / Riepilogo Voci', example: 'Summer Camp Rifugio' },
+  { token: '{{importo}}', label: 'Importo Netto Formattato', example: '€ 120,00' },
+  { token: '{{totale_lordo}}', label: 'Subtotale Lordo Voci', example: '€ 150,00' },
+  { token: '{{sconto_dicitura}}', label: 'Dicitura Sconto / Copertura', example: 'Riduzione fascia ISEE agevolata' },
+  { token: '{{sconto_importo}}', label: 'Importo Sconto Applicato', example: '€ 30,00' },
+  { token: '{{buono_importo}}', label: 'Buono Spesa Compensato', example: '€ 20,00' },
   { token: '{{metodo_pagamento}}', label: 'Metodo Pagamento', example: 'Bonifico' },
   { token: '{{data}}', label: 'Data Documento', example: '11/11/2026' },
   { token: '{{numero_ricevuta}}', label: 'N° Ricevuta', example: '2027/R-104' },
@@ -468,9 +482,14 @@ export function resolveDynamicTextPlaceholders(
     '{{cf_socio}}': ctx.cf_socio || 'Registrato agli atti',
     '{{indirizzo_socio}}': ctx.indirizzo_socio || '-',
     '{{tessera}}': ctx.tessera || 'In corso di rilascio',
+    '{{scadenza_tessera}}': ctx.scadenza_tessera || '31/12/' + String(ctx.anno || 2027),
     '{{assicurazione}}': ctx.assicurazione || 'Gold',
     '{{attivita}}': ctx.attivita || 'Quota Associativa Istituzionale',
     '{{importo}}': formattedAmount,
+    '{{totale_lordo}}': ctx.totale_lordo || formattedAmount,
+    '{{sconto_dicitura}}': ctx.sconto_dicitura || 'Nessuna riduzione applicata',
+    '{{sconto_importo}}': ctx.sconto_importo || '€ 0,00',
+    '{{buono_importo}}': ctx.buono_importo || '€ 0,00',
     '{{metodo_pagamento}}': ctx.metodo_pagamento || 'Bonifico',
     '{{data}}': ctx.data || new Date().toISOString().slice(0, 10),
     '{{numero_ricevuta}}': ctx.numero_ricevuta || '2027/R-001',
@@ -487,6 +506,132 @@ export function resolveDynamicTextPlaceholders(
     result = result.split(token).join(val);
   }
   return result;
+}
+
+export const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateId, EmailTemplateConfig> = {
+  ricevuta_evento: {
+    id: 'ricevuta_evento',
+    name: 'Iscrizione & Ricevuta Evento / Campus',
+    description: 'Inviata per confermare l\'iscrizione a un evento o campo e allegare la ricevuta (o preventivo) PDF.',
+    subjectTemplate: '{{asd_nome}} - Conferma Iscrizione e Ricevuta: {{attivita}} ({{socio}})',
+    bodyTemplate: `Gentile {{genitore}},
+
+ti confermiamo l'iscrizione di {{socio}} all'attività "{{attivita}}" organizzata da {{asd_nome}}.
+
+In allegato a questa email trovi il documento PDF ufficiale (Atto N° {{numero_ricevuta}} del {{data}}) relativo alla quota di {{importo}} ({{metodo_pagamento}}).
+
+Riepilogo dati registrati:
+- Partecipante: {{socio}} (Tessera {{tessera}} - Polizza {{assicurazione}})
+- Genitore / Intestatario: {{genitore}} (C.F. {{cf_genitore}})
+- Attività: {{attivita}}
+- Importo: {{importo}}
+
+Per qualsiasi necessità organizzativa o comunicazione puoi rispondere direttamente a questa email.
+
+Un caro saluto,
+La Segreteria di {{asd_nome}}
+Il Presidente {{presidente}}`,
+  },
+  ricevuta_tessera: {
+    id: 'ricevuta_tessera',
+    name: 'Rilascio Tessera Associativa & Ricevuta Quota',
+    description: 'Inviata al rilascio o rinnovo della tessera associativa annuale con ricevuta PDF allegata.',
+    subjectTemplate: '{{asd_nome}} - Tessera Associativa {{anno}} N° {{tessera}} e Ricevuta ({{socio}})',
+    bodyTemplate: `Gentile {{genitore}},
+
+grazie per aver rinnovato o perfezionato il tesseramento a {{asd_nome}} per l'anno sportivo {{anno}}!
+
+In allegato trovi la ricevuta ufficiale N° {{numero_ricevuta}} di {{importo}} relativa al tesseramento di {{socio}}.
+
+Estremi Tessera Associativa:
+- Socio / Tesserato: {{socio}}
+- Numero Tessera: {{tessera}}
+- Copertura Assicurativa: {{assicurazione}}
+- Scadenza Tessera: {{scadenza_tessera}}
+
+Conserva il PDF allegato (valido anche ai fini della detrazione fiscale IRPEF 19% per i minori 5-18 anni se versato con metodo tracciabile).
+
+Un caro saluto,
+La Segreteria di {{asd_nome}}`,
+  },
+  ricevuta_doposcuola: {
+    id: 'ricevuta_doposcuola',
+    name: 'Ricevuta Mensile Doposcuola / Progetto Selva',
+    description: 'Inviata per le quote mensili del Doposcuola / Selva nel Bosco con ricevuta PDF allegata.',
+    subjectTemplate: '{{asd_nome}} - Ricevuta Quota Mensile Doposcuola ({{socio}}) - N° {{numero_ricevuta}}',
+    bodyTemplate: `Gentile {{genitore}},
+
+in allegato trasmettiamo la ricevuta N° {{numero_ricevuta}} del {{data}} relativa a "{{attivita}}" per {{socio}}, per un importo complessivo di {{importo}} ({{metodo_pagamento}}).
+
+Ti ringraziamo per la puntualità e la fiducia nelle attività educative outdoor di {{asd_nome}}.
+
+Un caro saluto,
+La Segreteria di {{asd_nome}}`,
+  },
+  ricevuta_gadget: {
+    id: 'ricevuta_gadget',
+    name: 'Consegna Gadget & Ricevuta Contributo',
+    description: 'Inviata per il ritiro o contributo di abbigliamento e gadget associativi con ricevuta in allegato.',
+    subjectTemplate: '{{asd_nome}} - Ricevuta Contributo Gadget Associativo ({{socio}})',
+    bodyTemplate: `Gentile {{genitore}},
+
+in allegato trovi la ricevuta N° {{numero_ricevuta}} relativa a "{{attivita}}" per {{socio}} (importo {{importo}}).
+
+Grazie per sostenere le attività outdoor di {{asd_nome}}!
+
+Un caro saluto,
+La Segreteria di {{asd_nome}}`,
+  },
+  modulo_iscrizione_da_firmare: {
+    id: 'modulo_iscrizione_da_firmare',
+    name: 'Riepilogo Dati Iscrizione, Consenso Foto & Privacy da Controfirmare',
+    description: 'Inviata quando il socio compila il modulo d\'iscrizione: allega il PDF riepilogativo da firmare e restituire.',
+    subjectTemplate: '{{asd_nome}} - Modulo Riepilogo Dati e Consensi da Firmare per {{socio}}',
+    bodyTemplate: `Gentile {{genitore}},
+
+grazie per aver inviato i dati di iscrizione a {{asd_nome}} per {{socio}}!
+
+Per completare la pratica ed essere in regola con l'archivio associativo, il consenso foto/video e la normativa sul trattamento dei dati personali (GDPR), trovi in allegato il **Modulo Riepilogo Dati e Consensi** precompilato con i dati che ci hai comunicato.
+
+Ti chiediamo cortesemente di:
+1. Verificare che tutti i dati anagrafici, i contatti di emergenza e le eventuali note mediche/allergie di {{socio}} siano corretti;
+2. Apporre la tua firma negli appositi spazi in calce al documento (Richiesta Ammissione/Privacy e Consenso Foto/Video);
+3. Inviarci nuovamente il modulo firmato (anche tramite foto nitida o scansione rispondendo a questa email) oppure consegnarlo firmato agli educatori alla prima attività.
+
+Grazie per la collaborazione!
+
+Un caro saluto,
+La Segreteria di {{asd_nome}}
+Il Presidente {{presidente}}`,
+  },
+};
+
+export function resolveEmailTemplates(
+  profile?: AssociationProfile
+): Record<EmailTemplateId, EmailTemplateConfig> {
+  const custom = profile?.emailTemplates;
+  return {
+    ricevuta_evento: {
+      ...DEFAULT_EMAIL_TEMPLATES.ricevuta_evento,
+      ...(custom?.ricevuta_evento || {}),
+    },
+    ricevuta_tessera: {
+      ...DEFAULT_EMAIL_TEMPLATES.ricevuta_tessera,
+      ...(custom?.ricevuta_tessera || {}),
+    },
+    ricevuta_doposcuola: {
+      ...DEFAULT_EMAIL_TEMPLATES.ricevuta_doposcuola,
+      ...(custom?.ricevuta_doposcuola || {}),
+    },
+    ricevuta_gadget: {
+      ...DEFAULT_EMAIL_TEMPLATES.ricevuta_gadget,
+      ...(custom?.ricevuta_gadget || {}),
+    },
+    modulo_iscrizione_da_firmare: {
+      ...DEFAULT_EMAIL_TEMPLATES.modulo_iscrizione_da_firmare,
+      ...(custom?.modulo_iscrizione_da_firmare || {}),
+    },
+  };
 }
 
 export const DEFAULT_STAMP_OVERLAY: ImageOverlayConfig = {
@@ -1019,11 +1164,7 @@ function wrapCanvasText(
   return lines.length > 0 ? lines : [''];
 }
 
-/**
- * Genera e scarica direttamente un file .PDF A4 ad alta risoluzione della ricevuta/preventivo,
- * applicando i testi personalizzati, i campi dinamici risolti e il Timbro + Firma come veri overlay grafici.
- */
-export async function exportReceiptToPdfWithOverlays(params: {
+export interface ReceiptPdfGenerationParams {
   fileName: string;
   badgeTitle: string;
   receiptNumber: string;
@@ -1034,20 +1175,35 @@ export async function exportReceiptToPdfWithOverlays(params: {
   placeholderCtx: ReceiptPlaceholderContext;
   activityTitle: string;
   amount: number;
+  grossSubtotal?: number;
+  lineItems?: ReceiptLineItem[];
+  discountLabel?: string;
+  discountAmount?: number;
+  voucherApplied?: number;
   paymentMethod: string;
   resolvedHeaderDynamic: { label: string; value: string }[];
   resolvedTableDynamic: { label: string; value: string }[];
   resolvedFooterDynamic: { label: string; value: string }[];
   stampDataUrl?: string;
   signatureDataUrl?: string;
-}): Promise<void> {
+}
+
+/**
+ * Genera un Blob PDF A4 ad alta risoluzione della ricevuta/preventivo,
+ * utilizzabile sia per il download locale sia come allegato diretto per Gmail API.
+ */
+export async function generateReceiptPdfBlobWithOverlays(
+  params: ReceiptPdfGenerationParams
+): Promise<Blob> {
   const W = 1240;
   const H = 1754; // A4 @ 150 DPI
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) {
+    throw new Error('Impossibile inizializzare il canvas PDF');
+  }
 
   const layoutId: ReceiptLayoutTemplateId = params.config.layoutTemplate || 'standard';
   const baseFont = layoutId === 'official' ? 'Georgia, serif' : 'sans-serif';
@@ -1328,30 +1484,114 @@ export async function exportReceiptToPdfWithOverlays(params: {
   );
   ctx.font = '15px sans-serif';
   const subLines = subtextResolved ? wrapCanvasText(ctx, subtextResolved, contentW - 240) : [];
-  const mainRowH = 62 + subLines.length * 22;
 
-  ctx.strokeStyle = '#cbd5e1';
-  ctx.strokeRect(leftX, y, contentW, mainRowH);
+  const activeItems = (params.lineItems || []).filter((li) => li.enabled);
 
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#0f172a';
-  ctx.font = 'bold 19px sans-serif';
-  ctx.fillText(params.activityTitle, leftX + 18, y + 32);
+  if (activeItems.length > 0) {
+    activeItems.forEach((item, idx) => {
+      const isFirst = idx === 0;
+      const itemSubLines = isFirst ? subLines : [];
+      const rowH = 54 + (item.subtitle ? 20 : 0) + itemSubLines.length * 20;
 
-  ctx.textAlign = 'right';
-  ctx.font = 'bold 22px monospace';
-  ctx.fillText(formatEuro(params.amount), rightX - 18, y + 34);
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.strokeRect(leftX, y, contentW, rowH);
 
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#64748b';
-  ctx.font = '15px sans-serif';
-  let subY = y + 56;
-  for (const sl of subLines) {
-    ctx.fillText(sl, leftX + 18, subY);
-    subY += 21;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText(item.title, leftX + 18, y + 30);
+
+      ctx.textAlign = 'right';
+      ctx.font = 'bold 20px monospace';
+      ctx.fillText(formatEuro(item.amount), rightX - 18, y + 32);
+
+      let lineY = y + 50;
+      if (item.subtitle) {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#475569';
+        ctx.font = 'italic 14px sans-serif';
+        ctx.fillText(item.subtitle, leftX + 18, lineY);
+        lineY += 20;
+      }
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#64748b';
+      ctx.font = '14px sans-serif';
+      for (const sl of itemSubLines) {
+        ctx.fillText(sl, leftX + 18, lineY);
+        lineY += 20;
+      }
+
+      y += rowH;
+    });
+  } else {
+    const mainRowH = 62 + subLines.length * 22;
+
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.strokeRect(leftX, y, contentW, mainRowH);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 19px sans-serif';
+    ctx.fillText(params.activityTitle, leftX + 18, y + 32);
+
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 22px monospace';
+    ctx.fillText(
+      formatEuro(params.grossSubtotal !== undefined ? params.grossSubtotal : params.amount),
+      rightX - 18,
+      y + 34
+    );
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#64748b';
+    ctx.font = '15px sans-serif';
+    let subY = y + 56;
+    for (const sl of subLines) {
+      ctx.fillText(sl, leftX + 18, subY);
+      subY += 21;
+    }
+
+    y += mainRowH;
   }
 
-  y += mainRowH;
+  // Event Discount / ISEE / Copertura Quota Row (if present)
+  if (params.discountAmount && params.discountAmount > 0) {
+    const discRowH = 42;
+    ctx.fillStyle = '#fffbeb';
+    ctx.fillRect(leftX, y, contentW, discRowH);
+    ctx.strokeStyle = '#fde68a';
+    ctx.strokeRect(leftX, y, contentW, discRowH);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#92400e';
+    ctx.font = 'bold 15px sans-serif';
+    const dLabel = params.discountLabel?.trim() || 'Sconto / Riduzione Quota Applicata';
+    ctx.fillText(`Sconto / Riduzione: ${dLabel}`, leftX + 18, y + 26);
+
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText(`- ${formatEuro(params.discountAmount)}`, rightX - 18, y + 27);
+    y += discRowH;
+  }
+
+  // Voucher / Buono Spesa Row (if present)
+  if (params.voucherApplied && params.voucherApplied > 0) {
+    const vRowH = 42;
+    ctx.fillStyle = '#ecfdf5';
+    ctx.fillRect(leftX, y, contentW, vRowH);
+    ctx.strokeStyle = '#a7f3d0';
+    ctx.strokeRect(leftX, y, contentW, vRowH);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#065f46';
+    ctx.font = 'bold 15px sans-serif';
+    ctx.fillText('Compensazione tramite Buono Spesa / Credito Socio', leftX + 18, y + 26);
+
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText(`- ${formatEuro(params.voucherApplied)}`, rightX - 18, y + 27);
+    y += vRowH;
+  }
 
   // Dynamic Table Rows + Custom Lines
   const allTableRows = [
@@ -1391,7 +1631,7 @@ export async function exportReceiptToPdfWithOverlays(params: {
   ctx.fillStyle = '#0f172a';
   ctx.font = 'bold 16px sans-serif';
   ctx.fillText(
-    `TOTALE ${params.docType === 'ricevuta' ? 'VERSATO' : 'PREVISTO'}:`,
+    `TOTALE NETTO ${params.docType === 'ricevuta' ? 'VERSATO' : 'PREVISTO'}:`,
     rightX - 210,
     y + 33
   );
@@ -1565,13 +1805,327 @@ export async function exportReceiptToPdfWithOverlays(params: {
   }
 
   const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.94);
-  const pdfBlob = buildPdfBlobFromJpegDataUrl(jpegDataUrl, W, H);
+  return buildPdfBlobFromJpegDataUrl(jpegDataUrl, W, H);
+}
+
+export async function exportReceiptToPdfWithOverlays(
+  params: ReceiptPdfGenerationParams
+): Promise<void> {
+  const pdfBlob = await generateReceiptPdfBlobWithOverlays(params);
   const url = URL.createObjectURL(pdfBlob);
   const link = document.createElement('a');
   link.href = url;
   link.download = params.fileName.endsWith('.pdf')
     ? params.fileName
     : `${params.fileName}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ============================================================================
+// GENERAZIONE PDF A4: MODULO RIEPILOGO DATI SOCIO, CONSENSI FOTO & PRIVACY DA FIRMARE
+// ============================================================================
+
+export async function generateMemberSummaryConsentPdfBlob(params: {
+  member: Member;
+  profile: AssociationProfile;
+  docDate?: string;
+}): Promise<Blob> {
+  const { member, profile } = params;
+  const docDate = params.docDate || new Date().toLocaleDateString('it-IT');
+
+  const W = 1240;
+  const H = 1754; // A4 @ 150 DPI
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Impossibile inizializzare il canvas per il riepilogo socio.');
+  }
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  const pad = 64;
+  const leftX = pad + 40;
+  const rightX = W - pad - 40;
+  const contentW = rightX - leftX;
+
+  // Institutional Outer Border
+  ctx.strokeStyle = '#0f172a';
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(pad, pad, W - pad * 2, H - pad * 2);
+
+  let y = pad + 54;
+
+  // Header
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillText((profile.name || 'APUACAMP A.S.D.').toUpperCase(), leftX, y);
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#065f46';
+  ctx.font = 'bold 16px monospace';
+  ctx.fillText(`ANNO SPORTIVO ${profile.activeYear}`, rightX, y - 4);
+
+  y += 24;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#475569';
+  ctx.font = '15px sans-serif';
+  ctx.fillText(
+    `${profile.legalType || 'Associazione Sportiva Dilettantistica'} — C.F. ${profile.fiscalCode} — ${profile.address}`,
+    leftX,
+    y
+  );
+  ctx.textAlign = 'right';
+  ctx.font = '14px monospace';
+  ctx.fillText(`Data scheda: ${docDate}`, rightX, y);
+
+  y += 20;
+  ctx.fillStyle = '#64748b';
+  ctx.textAlign = 'left';
+  ctx.font = '14px sans-serif';
+  ctx.fillText(profile.affiliation || 'Affiliata US ACLI / CONI - RASD', leftX, y);
+
+  y += 20;
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(leftX, y, contentW, 44);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 17px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(
+    'MODULO RIEPILOGO DATI SOCIO, DOMANDA DI AMMISSIONE E CONSENSI (DA FIRMARE)',
+    W / 2,
+    y + 28
+  );
+
+  y += 64;
+
+  const drawSectionHeader = (title: string, badgeRight?: string) => {
+    ctx.fillStyle = '#f1f5f9';
+    ctx.fillRect(leftX, y, contentW, 36);
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(leftX, y, contentW, 36);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 15px sans-serif';
+    ctx.fillText(title, leftX + 14, y + 23);
+    if (badgeRight) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#065f46';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText(badgeRight, rightX - 14, y + 23);
+    }
+    y += 36;
+  };
+
+  const drawKeyValueRow = (
+    k1: string,
+    v1: string,
+    k2?: string,
+    v2?: string,
+    rowHeight: number = 42
+  ) => {
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(leftX, y, contentW, rowHeight);
+
+    const midX = leftX + contentW / 2;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#64748b';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillText(k1.toUpperCase(), leftX + 14, y + 16);
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText(v1 || '-', leftX + 14, y + 34);
+
+    if (k2 !== undefined) {
+      ctx.beginPath();
+      ctx.moveTo(midX, y);
+      ctx.lineTo(midX, y + rowHeight);
+      ctx.stroke();
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.fillText(k2.toUpperCase(), midX + 14, y + 16);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.fillText(v2 || '-', midX + 14, y + 34);
+    }
+
+    y += rowHeight;
+  };
+
+  // Section 1: Dati Socio / Partecipante Minore
+  drawSectionHeader(
+    '1. DATI ANAGRAFICI DEL SOCIO / PARTECIPANTE (MINORE)',
+    `Tessera N° ${member.membershipCardNumber || 'In assegnazione'}`
+  );
+  drawKeyValueRow(
+    'Cognome e Nome Partecipante',
+    member.childName,
+    'Data e Luogo di Nascita',
+    `${member.birthDate || '-'} (${member.birthPlace || '-'})`
+  );
+  drawKeyValueRow(
+    'Codice Fiscale Partecipante',
+    member.childFiscalCode || '-',
+    'Indirizzo di Residenza',
+    member.childAddress || '-'
+  );
+  drawKeyValueRow(
+    'Gruppo / Fascia Educativa',
+    `Gruppo ${member.group} anni`,
+    'Formula Tesseramento & Copertura Assicurativa',
+    `Polizza ${member.insuranceType} — Scadenza: ${member.expiryDate || '-'}`
+  );
+
+  y += 16;
+
+  // Section 2: Dati Genitore / Esercente Responsabilità Genitoriale
+  drawSectionHeader('2. DATI DEL GENITORE / TUTORE INTESTATARIO E CONTATTI DI EMERGENZA');
+  drawKeyValueRow(
+    'Cognome e Nome Genitore / Tutore',
+    member.parentName || '-',
+    'Codice Fiscale Genitore (per detrazione 19%)',
+    member.parentFiscalCode || '-'
+  );
+  drawKeyValueRow(
+    'Recapito Telefonico / WhatsApp Emergenze',
+    member.parentPhone || '-',
+    'Indirizzo Email per Comunicazioni e Ricevute',
+    member.parentEmail || '-'
+  );
+
+  y += 16;
+
+  // Section 3: Scheda Medica, Allergie, Intolleranze e Bisogni Educativi Speciali
+  drawSectionHeader('3. SCHEDA SANITARIA, ALLERGIE ALIMENTARI/FARMACI E NOTE ORGANIZZATIVE');
+  const allergyText =
+    member.allergies && member.allergies.trim() && member.allergies.toLowerCase() !== 'nessuna'
+      ? member.allergies
+      : 'Nessuna allergia o intolleranza segnalata';
+  const conditionsText =
+    member.notesConditions && member.notesConditions.trim()
+      ? member.notesConditions
+      : 'Nessuna nota medica/educativa particolare segnalata';
+
+  drawKeyValueRow('Allergie / Intolleranze / Regimi Alimentari', allergyText, undefined, undefined, 46);
+  drawKeyValueRow('Note Mediche, Farmaci al Bisogno, BES o Deleghe Ritiro', conditionsText, undefined, undefined, 46);
+
+  y += 18;
+
+  // Section 4: Dichiarazione Ammissione Socio, Statuto e Consenso Privacy GDPR
+  drawSectionHeader('4. DOMANDA DI AMMISSIONE A SOCIO, ACCETTAZIONE STATUTO E TRATTAMENTO DATI (GDPR)');
+  const legalParagraph =
+    `Il/La sottoscritto/a ${member.parentName || '________________'}, in qualità di genitore/tutore esercente la responsabilità genitoriale sul minore ${member.childName}, CONFERMA l'esattezza dei dati sopra riportati e CHIEDE l'iscrizione/rinnovo del minore quale Socio di ${profile.name} (${profile.affiliation || 'US ACLI'}) per l'anno sportivo ${profile.activeYear}, dichiarando di conoscere e accettare lo Statuto sociale, i regolamenti interni e le condizioni della polizza assicurativa (${member.insuranceType}). ` +
+    `Ai sensi degli artt. 13 e 14 del Regolamento UE 2016/679 (GDPR), autorizza il trattamento dei dati personali e particolari (inclusi i dati sanitari/allergie indicati al punto 3) esclusivamente per le finalità istituzionali, assicurative, sportive e di sicurezza dell'Associazione.`;
+
+  ctx.font = '14px sans-serif';
+  const legalLines = wrapCanvasText(ctx, legalParagraph, contentW - 32);
+  const legalBoxH = legalLines.length * 20 + 95;
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(leftX, y, contentW, legalBoxH);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.strokeRect(leftX, y, contentW, legalBoxH);
+
+  ctx.fillStyle = '#1e293b';
+  ctx.textAlign = 'left';
+  let ly = y + 24;
+  for (const line of legalLines) {
+    ctx.fillText(line, leftX + 16, ly);
+    ly += 20;
+  }
+
+  // Signature box 1 (Ammissione Socio & GDPR)
+  const sig1Y = y + legalBoxH - 22;
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(`Luogo e Data: ________________, ${docDate}`, leftX + 16, sig1Y);
+
+  ctx.textAlign = 'right';
+  ctx.fillText('FIRMA DEL GENITORE / TUTORE (Obbligatoria per Iscrizione e GDPR):', rightX - 280, sig1Y);
+  ctx.strokeStyle = '#0f172a';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(rightX - 265, sig1Y + 2);
+  ctx.lineTo(rightX - 16, sig1Y + 2);
+  ctx.stroke();
+
+  y += legalBoxH + 18;
+
+  // Section 5: Autorizzazione Foto e Video
+  drawSectionHeader('5. CONSENSO UTILIZZO IMMAGINI, FOTO E RIPRESE VIDEO ATTIVITÀ OUTDOOR');
+  const photoBoxH = 148;
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(leftX, y, contentW, photoBoxH);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.strokeRect(leftX, y, contentW, photoBoxH);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#1e293b';
+  ctx.font = '14px sans-serif';
+  const photoDesc =
+    `Ai sensi dell'art. 96 L. 633/1941 e del Regolamento UE 2016/679, con riferimento alla realizzazione e pubblicazione a titolo gratuito di foto e video ritraenti il/la minore durante le attività didattiche, escursionistiche e sportive di ${profile.name} (sito web, pagina social e documentazione associativa):`;
+  const photoLines = wrapCanvasText(ctx, photoDesc, contentW - 32);
+  let py = y + 24;
+  for (const pl of photoLines) {
+    ctx.fillText(pl, leftX + 16, py);
+    py += 19;
+  }
+
+  py += 12;
+  ctx.font = 'bold 15px sans-serif';
+  const giveMark = member.photoConsent ? '[ X ]' : '[   ]';
+  const denyMark = !member.photoConsent ? '[ X ]' : '[   ]';
+  ctx.fillStyle = member.photoConsent ? '#065f46' : '#334155';
+  ctx.fillText(`${giveMark} PRESTANO IL CONSENSO (AUTORIZZANO FOTO/VIDEO)`, leftX + 16, py);
+  ctx.fillStyle = !member.photoConsent ? '#991b1b' : '#334155';
+  ctx.fillText(`${denyMark} NEGANO IL CONSENSO (NON AUTORIZZANO)`, leftX + 510, py);
+
+  const sig2Y = y + photoBoxH - 20;
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText('FIRMA DEL GENITORE / TUTORE PER CONSENSO FOTO/VIDEO:', rightX - 280, sig2Y);
+  ctx.beginPath();
+  ctx.moveTo(rightX - 265, sig2Y + 2);
+  ctx.lineTo(rightX - 16, sig2Y + 2);
+  ctx.stroke();
+
+  y += photoBoxH + 24;
+
+  // Footer note for archiving
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#64748b';
+  ctx.font = 'italic 13px sans-serif';
+  ctx.fillText(
+    `Documento generato dal Registro Soci di ${profile.name} — Da restituire firmato in Segreteria o via email per l'archiviazione ufficiale.`,
+    W / 2,
+    H - pad - 18
+  );
+
+  const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.94);
+  return buildPdfBlobFromJpegDataUrl(jpegDataUrl, W, H);
+}
+
+export async function exportMemberSummaryConsentToPdf(params: {
+  member: Member;
+  profile: AssociationProfile;
+  docDate?: string;
+}): Promise<void> {
+  const blob = await generateMemberSummaryConsentPdfBlob(params);
+  const safeName = params.member.childName.replace(/\s+/g, '_');
+  const fileName = `Riepilogo_Dati_e_Consensi_${safeName}_${params.profile.activeYear}.pdf`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

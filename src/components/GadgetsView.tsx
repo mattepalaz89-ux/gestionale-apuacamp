@@ -6,6 +6,7 @@ import {
   FileSpreadsheet,
   Upload,
   Trash2,
+  Printer,
 } from 'lucide-react';
 import {
   GadgetItem,
@@ -33,6 +34,7 @@ interface GadgetsViewProps {
   onUpdateGadgetOrder: (order: GadgetOrder) => void;
   onDeleteGadgetOrder: (id: string) => void;
   onImportGadgetOrders: (orders: GadgetOrder[]) => void;
+  onOpenReceiptModalForGadget?: (order: GadgetOrder, member?: Member) => void;
 }
 
 export const GadgetsView: React.FC<GadgetsViewProps> = ({
@@ -45,6 +47,7 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
   onUpdateGadgetOrder,
   onDeleteGadgetOrder,
   onImportGadgetOrders,
+  onOpenReceiptModalForGadget,
 }) => {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'UNPAID' | 'UNDELIVERED' | 'EMAIL_PENDING'>('ALL');
@@ -508,6 +511,22 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
                       </td>
                       <td className="py-3 px-4 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1">
+                          {onOpenReceiptModalForGadget && (
+                            <button
+                              onClick={() => {
+                                const linkedMem = members.find(
+                                  (m) =>
+                                    m.childName.trim().toLowerCase() ===
+                                    order.childName.trim().toLowerCase()
+                                );
+                                onOpenReceiptModalForGadget(order, linkedMem);
+                              }}
+                              className="p-1.5 text-emerald-700 hover:bg-emerald-50 rounded-md transition-colors"
+                              title="Genera Ricevuta PDF e Invia via Gmail con allegato"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           <a
                             href={mailLink}
                             onClick={() =>

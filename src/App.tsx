@@ -98,6 +98,7 @@ export default function App() {
     member?: Member;
     booking?: EventBooking;
     transaction?: CashTransaction;
+    gadgetOrder?: GadgetOrder;
   }>({
     isOpen: false,
   });
@@ -769,6 +770,14 @@ export default function App() {
     });
   };
 
+  const openReceiptForGadget = (gadgetOrder: GadgetOrder, member?: Member) => {
+    setReceiptModal({
+      isOpen: true,
+      gadgetOrder,
+      member,
+    });
+  };
+
   return (
     <div className="flex h-screen bg-slate-100 text-slate-900 overflow-hidden font-sans selection:bg-emerald-100 selection:text-emerald-900">
       {/* Hidden input fallback for opening a local PC .json file */}
@@ -1021,6 +1030,7 @@ export default function App() {
               onUpdateGadgetOrder={handleUpdateGadgetOrder}
               onDeleteGadgetOrder={handleDeleteGadgetOrder}
               onImportGadgetOrders={handleImportGadgetOrders}
+              onOpenReceiptModalForGadget={openReceiptForGadget}
             />
           )}
 
@@ -1152,8 +1162,15 @@ export default function App() {
         member={receiptModal.member}
         booking={receiptModal.booking}
         transaction={receiptModal.transaction}
+        gadgetOrder={receiptModal.gadgetOrder}
+        events={appState.events}
+        gadgets={appState.gadgets}
+        googleUserEmail={googleUserEmail}
         profile={appState.profile}
         onUpdateProfile={handleUpdateProfile}
+        onUpdateMember={handleUpdateMember}
+        onUpdateBooking={handleUpdateBooking}
+        onUpdateGadgetOrder={handleUpdateGadgetOrder}
         onOpenFullConfigPanel={() => setActiveTab('receipts_config')}
       />
 

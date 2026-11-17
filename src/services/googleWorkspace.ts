@@ -19,6 +19,7 @@ export const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/forms.body',
   'https://www.googleapis.com/auth/forms.responses.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
 ];
 
 const app = initializeApp(firebaseConfig);
@@ -834,3 +835,133 @@ export async function fetchGoogleFormResponses(formId: string): Promise<{
     responses: parsedResponses,
   };
 }
+
+// ============================================================================
+// GMAIL API: INVIO EMAIL CON ALLEGATO PDF (RFC 2822 MULTIPART/MIXED -> BASE64URL)
+// ============================================================================
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, Array.from(sub));
+  }
+  return btoa(binary);
+}
+
+function encodeUtf8ToBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, Array.from(sub));
+  }
+  return btoa(binary);
+}
+
+function encodeMimeSubjectUtf8(subject: string): string {
+  return `=?UTF-8?B?${encodeUtf8ToBase64(subject)}?=`;
+}
+
+function wrapBase64Lines(base64Str: string, lineLength: number = 76): string {
+  const lines: string[] = [];
+  for (let i = 0; i < base64Str.length; i += lineLength) {
+    lines.push(base64Str.slice(i, i + lineLength));
+  }
+  return lines.join('\r\n');
+}
+
+export async function sendGmailMessageWithAttachment(params: {
+  to: string;
+  subject: string;
+  bodyText: string;
+  replyTo?: string;
+  attachmentFileName?: string;
+  attachmentPdfBlob?: Blob;
+}): Promise<{ id: string; threadId: string }> {
+  const token = await getAccessToken();
+  if (!token) {
+    throw new Error('AUTH_REQUIRED');
+  }
+
+  const recipient = params.to.trim();
+  if (!recipient || !recipient.includes('@')) {
+    throw new Error('Indirizzo email destinatario non valido.');
+  }
+
+  const boundary = `===_Apuacamp_ASD_Mime_${Date.now().toString(36)}_===`;
+  const headers: string[] = [
+    `To: ${recipient}`,
+    `Subject: ${encodeMimeSubjectUtf8(params.subject.trim() || 'Comunicazione Segreteria ASD')}`,
+    'MIME-Version: 1.0',
+  ];
+
+  if (params.replyTo && params.replyTo.includes('@')) {
+    headers.push(`Reply-To: ${params.replyTo.trim()}`);
+  }
+
+  let rawMimeMessage = '';
+
+  if (params.attachmentPdfBlob && params.attachmentFileName) {
+    const safeFileName = params.attachmentFileName.replace(/["\r\n]/g, '_');
+    const pdfBase64 = wrapBase64Lines(await blobToBase64(params.attachmentPdfBlob));
+    const bodyBase64 = wrapBase64Lines(encodeUtf8ToBase64(params.bodyText));
+
+    headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+
+    const parts = [
+      headers.join('\r\n'),
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      bodyBase64,
+      '',
+      `--${boundary}`,
+      `Content-Type: application/pdf; name="${safeFileName}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${safeFileName}"`,
+      '',
+      pdfBase64,
+      '',
+      `--${boundary}--`,
+      '',
+    ];
+    rawMimeMessage = parts.join('\r\n');
+  } else {
+    const bodyBase64 = wrapBase64Lines(encodeUtf8ToBase64(params.bodyText));
+    headers.push('Content-Type: text/plain; charset="UTF-8"');
+    headers.push('Content-Transfer-Encoding: base64');
+    rawMimeMessage = `${headers.join('\r\n')}\r\n\r\n${bodyBase64}`;
+  }
+
+  const base64UrlEncoded = encodeUtf8ToBase64(rawMimeMessage)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw: base64UrlEncoded }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      err?.error?.message ||
+        'Errore durante l\'invio dell\'email tramite Gmail API. Verifica di aver concesso il permesso Gmail.'
+    );
+  }
+
+  return res.json();
+}
+

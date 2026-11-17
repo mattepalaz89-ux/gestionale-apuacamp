@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {
   parseAmount,
   calculateCashTotals,
+  sortMembersList,
+  mergeSavedDiscountLabels,
+  calculateDiscountedEventPrice,
+  calculateMultiItemReceiptTotals,
 } from './finance';
 import {
   generatePreEventBriefings,
@@ -38,6 +42,7 @@ import {
   getReceiptLayoutTemplateMeta,
   buildGoogleFormBatchRequests,
   resolveReceiptConfig,
+  resolveEmailTemplates,
   resolveDynamicTextPlaceholders,
 } from './formAndReceiptTemplates';
 import { getPageGuide, getAllPageGuides } from './pageGuides';
@@ -1121,6 +1126,132 @@ describe('Interactive Resolution (with Note) & Postponement of Notifications and
     assert.ok(foundInNotifs.title.includes('Dicembre 2027'));
   });
 });
+
+describe('Sortable Members, Event Discounts (Fixed € / %), Vouchers & Smart Receipt / Gmail Templates', () => {
+  const membersForSort: Member[] = [
+    {
+      id: 'm-z',
+      childName: 'Zoe Neri',
+      birthDate: '10/03/2018',
+      birthPlace: 'Massa',
+      group: '6-11',
+      childFiscalCode: '',
+      childAddress: '',
+      parentName: 'Alberto Neri',
+      parentFiscalCode: '',
+      parentPhone: '',
+      parentEmail: 'alberto@example.com',
+      membershipCardNumber: '26ACLI020',
+      isPaid: true,
+      expiryDate: '31/12/2026',
+      insuranceType: 'Platinum',
+      photoConsent: true,
+      allergies: '',
+      notesConditions: '',
+      formSignedAndArchived: false,
+      voucherBalance: 15,
+    },
+    {
+      id: 'm-a',
+      childName: 'Alessio Bianchi',
+      birthDate: '15/07/2019',
+      birthPlace: 'Carrara',
+      group: '3-6',
+      childFiscalCode: '',
+      childAddress: '',
+      parentName: 'Zeno Bianchi',
+      parentFiscalCode: '',
+      parentPhone: '',
+      parentEmail: 'zeno@example.com',
+      membershipCardNumber: '26ACLI002',
+      isPaid: false,
+      expiryDate: '15/09/2027',
+      insuranceType: 'Base',
+      photoConsent: false,
+      allergies: '',
+      notesConditions: '',
+      formSignedAndArchived: true,
+      voucherBalance: 40,
+    },
+  ];
+
+  it('sorts members ascending and descending by childName, parentName, membershipCardNumber, insuranceType, and voucherBalance', () => {
+    const byChildAsc = sortMembersList(membersForSort, 'childName', 'asc');
+    assert.equal(byChildAsc[0].childName, 'Alessio Bianchi');
+    const byChildDesc = sortMembersList(membersForSort, 'childName', 'desc');
+    assert.equal(byChildDesc[0].childName, 'Zoe Neri');
+
+    const byParentAsc = sortMembersList(membersForSort, 'parentName', 'asc');
+    assert.equal(byParentAsc[0].parentName, 'Alberto Neri');
+
+    const byCardAsc = sortMembersList(membersForSort, 'membershipCardNumber', 'asc');
+    assert.equal(byCardAsc[0].membershipCardNumber, '26ACLI002');
+    const byCardDesc = sortMembersList(membersForSort, 'membershipCardNumber', 'desc');
+    assert.equal(byCardDesc[0].membershipCardNumber, '26ACLI020');
+
+    const byVoucherDesc = sortMembersList(membersForSort, 'voucherBalance', 'desc');
+    assert.equal(byVoucherDesc[0].voucherBalance, 40);
+  });
+
+  it('calculates fixed (€) and percentage (%) event discounts and voucher deductions accurately', () => {
+    // Fixed discount € 30 + voucher € 20 on € 130 base price
+    const fixedCalc = calculateDiscountedEventPrice({
+      basePrice: 130,
+      discountType: 'fixed',
+      discountValue: 30,
+      voucherUsed: 20,
+    });
+    assert.equal(fixedCalc.basePrice, 130);
+    assert.equal(fixedCalc.discountAmount, 30);
+    assert.equal(fixedCalc.afterDiscountPrice, 100);
+    assert.equal(fixedCalc.voucherApplied, 20);
+    assert.equal(fixedCalc.finalNetPrice, 80);
+
+    // Percentage discount 25% + voucher € 50 on € 120 base price
+    const percentCalc = calculateDiscountedEventPrice({
+      basePrice: 120,
+      discountType: 'percent',
+      discountValue: 25,
+      voucherUsed: 50,
+    });
+    assert.equal(percentCalc.discountAmount, 30);
+    assert.equal(percentCalc.afterDiscountPrice, 90);
+    assert.equal(percentCalc.voucherApplied, 50);
+    assert.equal(percentCalc.finalNetPrice, 40);
+  });
+
+  it('calculates multi-item receipt totals and saves custom discount labels for future receipts', () => {
+    const multi = calculateMultiItemReceiptTotals({
+      items: [
+        { id: '1', category: 'evento', title: 'Campo Estivo', amount: 150, enabled: true },
+        { id: '2', category: 'tessera', title: 'Tessera Gold', amount: 20, enabled: true },
+        { id: '3', category: 'gadget', title: 'Maglietta', amount: 15, enabled: false },
+      ],
+      discountType: 'fixed',
+      discountValue: 40,
+      voucherUsed: 25,
+    });
+    assert.equal(multi.grossTotal, 170);
+    assert.equal(multi.discountAmount, 40);
+    assert.equal(multi.voucherApplied, 25);
+    assert.equal(multi.netTotal, 105);
+
+    const mergedLabels = mergeSavedDiscountLabels(
+      ['Riduzione fascia ISEE agevolata'],
+      'Contributo coperto da Associazione Amici Apuane'
+    );
+    assert.ok(mergedLabels.includes('Contributo coperto da Associazione Amici Apuane'));
+    assert.ok(mergedLabels.includes('Riduzione fascia ISEE agevolata'));
+
+    const emailTemplates = resolveEmailTemplates(resetToEmpty2027().profile);
+    const tplValues = Object.values(emailTemplates);
+    assert.equal(tplValues.length, 5);
+    assert.ok(emailTemplates.modulo_iscrizione_da_firmare);
+    assert.ok(emailTemplates.ricevuta_evento);
+    assert.ok(emailTemplates.ricevuta_doposcuola);
+  });
+});
+
 
 
 

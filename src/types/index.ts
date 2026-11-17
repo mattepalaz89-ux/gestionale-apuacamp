@@ -37,6 +37,9 @@ export interface Member {
   allergies: string;
   notesConditions: string;
   formSignedAndArchived: boolean;
+  signedFormSentAt?: string;
+  voucherBalance?: number; // Buono spesa disponibile (€) per compensare i costi delle attività in tutto o in parte
+  voucherNotes?: string; // Note sul buono (es. "Buono recupero uscita pioggia" o "Bonus famiglia")
   needsLevelUp?: boolean | string;
   confirmationEmailSent?: boolean;
   confirmationEmailSentAt?: string;
@@ -112,6 +115,8 @@ export interface CashTransaction {
   recurringInstallmentNumber?: number;
 }
 
+export type EventDiscountType = 'none' | 'fixed' | 'percent';
+
 export interface EventItem {
   id: string;
   name: string;
@@ -124,6 +129,9 @@ export interface EventItem {
   depositDefault?: number; // Caparra standard richiesta (€)
   memberPrice: number;
   nonMemberPrice: number;
+  defaultDiscountType?: EventDiscountType;
+  defaultDiscountValue?: number;
+  defaultDiscountLabel?: string;
   notes?: string;
   status: 'aperto' | 'concluso' | 'in_corso' | 'annullato';
   targetStaffCount?: number;
@@ -143,11 +151,17 @@ export interface EventBooking {
   parentEmail?: string;
   parentPhone?: string;
   confirmed: boolean;
+  basePrice?: number; // Quota lorda prima di sconti e buoni
+  discountType?: EventDiscountType; // 'none' | 'fixed' | 'percent'
+  discountValue?: number; // Valore numerico dello sconto (€ se fixed, % se percent)
+  discountAmount?: number; // Sconto effettivo in € calcolato sull'evento
+  discountLabel?: string; // Dicitura sconto per la ricevuta (es. "Quota coperta da Associazione / ISEE")
+  voucherApplied?: number; // Importo buono spesa applicato (€)
   depositAmount: number;
   balanceAmount: number;
   isDepositPaid: boolean;
   isBalancePaid: boolean;
-  totalPrice: number;
+  totalPrice: number; // Netto da pagare (dopo sconto evento e buono spesa)
   annualCardValid: boolean;
   extraInsurancePaid: boolean;
   paymentMethod: PaymentMethod;
@@ -583,6 +597,37 @@ export interface DeadlineOverrideRecord {
   updatedAt: string;
 }
 
+export type ReceiptLineItemCategory =
+  | 'evento'
+  | 'doposcuola'
+  | 'tessera'
+  | 'gadget'
+  | 'custom';
+
+export interface ReceiptLineItem {
+  id: string;
+  category: ReceiptLineItemCategory;
+  title: string;
+  subtitle?: string;
+  amount: number;
+  enabled: boolean;
+}
+
+export type EmailTemplateId =
+  | 'ricevuta_evento'
+  | 'ricevuta_tessera'
+  | 'ricevuta_doposcuola'
+  | 'ricevuta_gadget'
+  | 'modulo_iscrizione_da_firmare';
+
+export interface EmailTemplateConfig {
+  id: EmailTemplateId;
+  name: string;
+  description: string;
+  subjectTemplate: string;
+  bodyTemplate: string;
+}
+
 export interface AssociationProfile {
   name: string;
   legalType: string;
@@ -610,6 +655,8 @@ export interface AssociationProfile {
   digitalCardConfig?: DigitalCardTemplateConfig;
   formStandardFields?: GoogleFormFieldConfig[];
   receiptConfig?: ReceiptTemplateConfig;
+  savedDiscountLabels?: string[]; // Diciture sconto salvate e selezionabili per ricevute ed eventi futuri
+  emailTemplates?: Record<EmailTemplateId, EmailTemplateConfig>; // Modelli email Gmail personalizzabili
   completedDeadlineIds?: string[];
   customDeadlines?: CustomCriticalDeadline[];
   deadlineOverrides?: Record<string, DeadlineOverrideRecord>;

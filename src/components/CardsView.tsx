@@ -12,6 +12,9 @@ import {
   History,
   CalendarCheck,
   Users,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import {
   Member,
@@ -33,6 +36,11 @@ import {
   TransactionDateSelector,
   getTodayIsoDate,
 } from './TransactionDateSelector';
+import {
+  MemberSortField,
+  SortDirection,
+  sortMembersList,
+} from '../utils/finance';
 
 interface CardsViewProps {
   members: Member[];
@@ -60,7 +68,29 @@ export const CardsView: React.FC<CardsViewProps> = ({
   const [search, setSearch] = useState('');
   const [selectedInsurance, setSelectedInsurance] = useState<string>('ALL');
   const [selectedCardStatus, setSelectedCardStatus] = useState<string>('ALL');
+  const [sortField, setSortField] = useState<MemberSortField>('childName');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
+
+  const handleToggleSort = (field: MemberSortField) => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const renderSortIcon = (field: MemberSortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-70 inline ml-1" />;
+    }
+    return sortDirection === 'asc' ? (
+      <ArrowUp className="w-3 h-3 text-emerald-700 inline ml-1" />
+    ) : (
+      <ArrowDown className="w-3 h-3 text-emerald-700 inline ml-1" />
+    );
+  };
 
   // Modal for editing / renewing ONLY the card of an existing member
   const [editingCardMember, setEditingCardMember] = useState<Member | null>(null);
@@ -149,7 +179,7 @@ export const CardsView: React.FC<CardsViewProps> = ({
   }, [members, bookings]);
 
   const filteredMembers = useMemo(() => {
-    return members.filter((m) => {
+    const filtered = members.filter((m) => {
       if (selectedInsurance !== 'ALL' && m.insuranceType !== selectedInsurance) return false;
       const st = getMemberCardState(m);
       if (selectedCardStatus === 'ACTIVE' && !st.isActiveAndOk) return false;
@@ -173,7 +203,8 @@ export const CardsView: React.FC<CardsViewProps> = ({
       }
       return true;
     });
-  }, [members, bookings, selectedInsurance, selectedCardStatus, search]);
+    return sortMembersList(filtered, sortField, sortDirection);
+  }, [members, bookings, selectedInsurance, selectedCardStatus, search, sortField, sortDirection]);
 
   const openEditCardModal = (m: Member, asRenewal: boolean = false) => {
     const today = getTodayIsoDate();
@@ -492,12 +523,62 @@ export const CardsView: React.FC<CardsViewProps> = ({
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
-                <th className="py-3 px-4">N° Tessera US ACLI</th>
-                <th className="py-3 px-4">Intestatario (Socio & Genitore)</th>
-                <th className="py-3 px-4">Polizza Assicurativa</th>
-                <th className="py-3 px-4">Formula & Emissione</th>
-                <th className="py-3 px-4 text-center">Scadenza</th>
-                <th className="py-3 px-4 text-center">Stato Tessera</th>
+                <th
+                  onClick={() => handleToggleSort('membershipCardNumber')}
+                  className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                >
+                  N° Tessera US ACLI {renderSortIcon('membershipCardNumber')}
+                </th>
+                <th className="py-2.5 px-4 select-none">
+                  <div className="flex flex-wrap items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('childName')}
+                      className={`inline-flex items-center px-1.5 py-0.5 rounded uppercase text-[10px] font-bold transition ${
+                        sortField === 'childName'
+                          ? 'bg-emerald-100 text-emerald-900'
+                          : 'hover:bg-slate-200/70 text-slate-600'
+                      }`}
+                    >
+                      Socio {renderSortIcon('childName')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('parentName')}
+                      className={`inline-flex items-center px-1.5 py-0.5 rounded uppercase text-[10px] font-bold transition ${
+                        sortField === 'parentName'
+                          ? 'bg-emerald-100 text-emerald-900'
+                          : 'hover:bg-slate-200/70 text-slate-600'
+                      }`}
+                    >
+                      Genitore {renderSortIcon('parentName')}
+                    </button>
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleToggleSort('insuranceType')}
+                  className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                >
+                  Polizza Assicurativa {renderSortIcon('insuranceType')}
+                </th>
+                <th
+                  onClick={() => handleToggleSort('cardValidityType')}
+                  className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                >
+                  Formula & Emissione {renderSortIcon('cardValidityType')}
+                </th>
+                <th
+                  onClick={() => handleToggleSort('expiryDate')}
+                  className="py-3 px-4 text-center cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                >
+                  Scadenza {renderSortIcon('expiryDate')}
+                </th>
+                <th
+                  onClick={() => handleToggleSort('isPaid')}
+                  className="py-3 px-4 text-center cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
+                >
+                  Stato Tessera {renderSortIcon('isPaid')}
+                </th>
                 <th className="py-3 px-4 text-right">Azioni Rapide Tessera</th>
               </tr>
             </thead>

@@ -16,9 +16,12 @@ import {
   Tag,
   Eye,
   Wand2,
+  Mail,
 } from 'lucide-react';
 import {
   AssociationProfile,
+  EmailTemplateConfig,
+  EmailTemplateId,
   ImageOverlayConfig,
   Member,
   ReceiptDynamicField,
@@ -27,9 +30,10 @@ import {
   ReceiptLayoutTemplateId,
   ReceiptTemplateConfig,
 } from '../types';
-import { formatEuro } from '../utils/finance';
+import { formatEuro, mergeSavedDiscountLabels } from '../utils/finance';
 import {
   DEFAULT_DYNAMIC_FIELDS,
+  DEFAULT_EMAIL_TEMPLATES,
   DEFAULT_RECEIPT_CONFIG,
   DEFAULT_SIGNATURE_OVERLAY,
   DEFAULT_STAMP_OVERLAY,
@@ -46,6 +50,7 @@ import {
   generateDigitalSignatureDataUrl,
   getReceiptLayoutTemplateMeta,
   resolveDynamicTextPlaceholders,
+  resolveEmailTemplates,
   resolveReceiptConfig,
   ReceiptPlaceholderContext,
 } from '../utils/formAndReceiptTemplates';
@@ -63,9 +68,9 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
   onUpdateProfile,
   onOpenSampleReceiptModal,
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'texts' | 'dynamic_fields' | 'overlays'>(
-    'texts'
-  );
+  const [activeSubTab, setActiveSubTab] = useState<
+    'texts' | 'dynamic_fields' | 'overlays' | 'email_templates'
+  >('texts');
   const [previewDocType, setPreviewDocType] = useState<'ricevuta' | 'preventivo' | 'sollecito'>(
     'ricevuta'
   );
@@ -73,6 +78,14 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
   const [config, setConfig] = useState<ReceiptTemplateConfig>(() =>
     resolveReceiptConfig(profile)
   );
+  const [emailTemplates, setEmailTemplates] = useState<
+    Record<EmailTemplateId, EmailTemplateConfig>
+  >(() => resolveEmailTemplates(profile));
+  const [selectedEmailTplId, setSelectedEmailTplId] =
+    useState<EmailTemplateId>('ricevuta_evento');
+  const [newDiscountLabelInput, setNewDiscountLabelInput] = useState<string>('');
+  const savedDiscountLabels = mergeSavedDiscountLabels(profile.savedDiscountLabels);
+
   const [stampDataUrl, setStampDataUrl] = useState<string | undefined>(
     profile.stampImageDataUrl
   );
@@ -83,7 +96,8 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
   useEffect(() => {
     setStampDataUrl(profile.stampImageDataUrl);
     setSignatureDataUrl(profile.signatureImageDataUrl);
-  }, [profile.stampImageDataUrl, profile.signatureImageDataUrl]);
+    setEmailTemplates(resolveEmailTemplates(profile));
+  }, [profile]);
 
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -829,44 +843,57 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
         {/* LEFT COLUMN: 3-TAB CONFIGURATION PANEL (7 cols on XL) */}
         <div className="xl:col-span-7 bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
           {/* Sub-Navigation Tabs */}
-          <div className="grid grid-cols-3 border-b border-slate-200 bg-slate-50 p-1.5 gap-1.5 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-4 border-b border-slate-200 bg-slate-50 p-1.5 gap-1.5 text-xs">
             <button
               type="button"
               onClick={() => setActiveSubTab('texts')}
-              className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg font-bold transition-all ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg font-bold transition-all ${
                 activeSubTab === 'texts'
                   ? 'bg-slate-900 text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
               }`}
             >
-              <FileText className="w-4 h-4" />
-              <span>1. Testi Predefiniti & Clausole</span>
+              <FileText className="w-3.5 h-3.5 shrink-0" />
+              <span>1. Testi & Clausole</span>
             </button>
 
             <button
               type="button"
               onClick={() => setActiveSubTab('dynamic_fields')}
-              className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg font-bold transition-all ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg font-bold transition-all ${
                 activeSubTab === 'dynamic_fields'
                   ? 'bg-slate-900 text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
               }`}
             >
-              <Tag className="w-4 h-4" />
-              <span>2. Campi Dinamici ({dynamicFields.length})</span>
+              <Tag className="w-3.5 h-3.5 shrink-0" />
+              <span>2. Campi ({dynamicFields.length})</span>
             </button>
 
             <button
               type="button"
               onClick={() => setActiveSubTab('overlays')}
-              className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg font-bold transition-all ${
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg font-bold transition-all ${
                 activeSubTab === 'overlays'
                   ? 'bg-slate-900 text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
               }`}
             >
-              <Layers className="w-4 h-4" />
-              <span>3. Posizione & Stile Overlay PDF</span>
+              <Layers className="w-3.5 h-3.5 shrink-0" />
+              <span>3. Timbro & Firma</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('email_templates')}
+              className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg font-bold transition-all ${
+                activeSubTab === 'email_templates'
+                  ? 'bg-blue-700 text-white shadow-xs'
+                  : 'text-blue-800 hover:text-blue-950 hover:bg-blue-100/60'
+              }`}
+            >
+              <Mail className="w-3.5 h-3.5 shrink-0" />
+              <span>4. Modelli Email & Sconti</span>
             </button>
           </div>
 
@@ -1888,6 +1915,228 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
                         className="w-full accent-blue-600"
                       />
                     </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ============================================================== */}
+            {/* TAB 4: MODELLI EMAIL GMAIL & DICITURE SCONTO SALVATE           */}
+            {/* ============================================================== */}
+            {activeSubTab === 'email_templates' && (
+              <div className="space-y-5">
+                {/* 1. Editor Modelli Email Gmail */}
+                <div className="p-4 rounded-xl bg-blue-50/70 border border-blue-200 space-y-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="font-bold text-blue-950 text-sm flex items-center gap-2">
+                        <Mail className="w-4 h-4 text-blue-700" />
+                        <span>Modelli Email Precompilati per Invio tramite Gmail</span>
+                      </h4>
+                      <p className="text-[11px] text-blue-800 mt-0.5">
+                        Personalizza i modelli di email per Eventi, Tessere, Mensile Doposcuola, Gadget e Riepilogo Iscrizione da Firmare. Il sistema sostituisce automaticamente i dati del socio al momento dell&apos;invio.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const defaults: Record<EmailTemplateId, EmailTemplateConfig> = {
+                          ricevuta_evento: { ...DEFAULT_EMAIL_TEMPLATES.ricevuta_evento },
+                          ricevuta_tessera: { ...DEFAULT_EMAIL_TEMPLATES.ricevuta_tessera },
+                          ricevuta_doposcuola: { ...DEFAULT_EMAIL_TEMPLATES.ricevuta_doposcuola },
+                          ricevuta_gadget: { ...DEFAULT_EMAIL_TEMPLATES.ricevuta_gadget },
+                          modulo_iscrizione_da_firmare: {
+                            ...DEFAULT_EMAIL_TEMPLATES.modulo_iscrizione_da_firmare,
+                          },
+                        };
+                        setEmailTemplates(defaults);
+                        onUpdateProfile({
+                          ...profile,
+                          emailTemplates: defaults,
+                        });
+                        showToast('Modelli email ripristinati ai testi predefiniti.');
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white hover:bg-blue-100 text-blue-800 border border-blue-200 font-semibold text-[11px]"
+                    >
+                      Ripristina Testi Email Default
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-blue-950 font-bold mb-1">
+                      Seleziona il Modello Email da Modificare:
+                    </label>
+                    <select
+                      value={selectedEmailTplId}
+                      onChange={(e) => setSelectedEmailTplId(e.target.value as EmailTemplateId)}
+                      className="w-full px-3 py-2 rounded-lg border border-blue-300 bg-white font-bold text-slate-900"
+                    >
+                      {(Object.values(emailTemplates) as EmailTemplateConfig[]).map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {(() => {
+                    const currentTpl =
+                      emailTemplates[selectedEmailTplId] || emailTemplates.ricevuta_evento;
+                    if (!currentTpl) return null;
+
+                    return (
+                      <div className="space-y-3">
+                        <div className="p-2.5 rounded-lg bg-white border border-blue-200">
+                          <div className="text-[10px] font-bold text-slate-500 uppercase mb-1">
+                            Variabili automatiche utilizzabili nell&apos;oggetto e nel testo:
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {DYNAMIC_PLACEHOLDER_TOKENS.map((tok) => (
+                              <button
+                                key={tok.token}
+                                type="button"
+                                onClick={() => {
+                                  setEmailTemplates((prev) => ({
+                                    ...prev,
+                                    [currentTpl.id]: {
+                                      ...currentTpl,
+                                      bodyTemplate: `${currentTpl.bodyTemplate} ${tok.token}`,
+                                    },
+                                  }));
+                                }}
+                                className="px-1.5 py-0.5 rounded bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-900 border border-blue-200 font-mono text-[10px] transition-colors"
+                                title={`Clicca per aggiungere ${tok.token} (${tok.label})`}
+                              >
+                                {tok.token}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-blue-950 font-semibold mb-1">
+                            Oggetto Predefinito Email:
+                          </label>
+                          <input
+                            type="text"
+                            value={currentTpl.subjectTemplate}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEmailTemplates((prev) => ({
+                                ...prev,
+                                [currentTpl.id]: { ...currentTpl, subjectTemplate: val },
+                              }));
+                            }}
+                            className="w-full px-3 py-1.5 rounded-lg border border-blue-300 bg-white font-semibold"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-blue-950 font-semibold mb-1">
+                            Testo del Messaggio Email:
+                          </label>
+                          <textarea
+                            rows={7}
+                            value={currentTpl.bodyTemplate}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEmailTemplates((prev) => ({
+                                ...prev,
+                                [currentTpl.id]: { ...currentTpl, bodyTemplate: val },
+                              }));
+                            }}
+                            className="w-full px-3 py-2 rounded-lg border border-blue-300 bg-white leading-relaxed"
+                          />
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onUpdateProfile({
+                                ...profile,
+                                emailTemplates,
+                              });
+                              showToast(
+                                `Modello email "${currentTpl.name}" salvato nel profilo ASD!`
+                              );
+                            }}
+                            className="flex items-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded-lg shadow-xs"
+                          >
+                            <Save className="w-3.5 h-3.5" />
+                            <span>Salva Modelli Email</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* 2. Gestione Diciture Sconto / Copertura Quota Salvate */}
+                <div className="p-4 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-3">
+                  <div>
+                    <h4 className="font-bold text-indigo-950 text-sm flex items-center gap-2">
+                      <Tag className="w-4 h-4 text-indigo-700" />
+                      <span>Diciture Sconto / Copertura Quota Salvate per Eventi e Ricevute</span>
+                    </h4>
+                    <p className="text-[11px] text-indigo-800 mt-0.5">
+                      Queste diciture compaiono nel menu a tendina quando inserisci uno sconto (in quota fissa € o percentuale %) in un Evento o in una Ricevuta (es. riduzioni ISEE, quote coperte da Comuni o Associazioni partner).
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      placeholder="Aggiungi nuova dicitura (es. Quota coperta da Fondazione X)"
+                      value={newDiscountLabelInput}
+                      onChange={(e) => setNewDiscountLabelInput(e.target.value)}
+                      className="flex-1 px-3 py-1.5 rounded-lg border border-indigo-200 bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newDiscountLabelInput.trim()) return;
+                        const next = mergeSavedDiscountLabels(
+                          profile.savedDiscountLabels,
+                          newDiscountLabelInput.trim()
+                        );
+                        onUpdateProfile({
+                          ...profile,
+                          savedDiscountLabels: next,
+                        });
+                        setNewDiscountLabelInput('');
+                        showToast('Nuova dicitura sconto salvata!');
+                      }}
+                      className="px-3.5 py-1.5 bg-indigo-700 hover:bg-indigo-800 text-white font-bold rounded-lg flex items-center gap-1 shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Aggiungi Dicitura</span>
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {savedDiscountLabels.map((lbl) => (
+                      <span
+                        key={lbl}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-indigo-950 font-medium text-[11px]"
+                      >
+                        <span>{lbl}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const filtered = savedDiscountLabels.filter((item) => item !== lbl);
+                            onUpdateProfile({
+                              ...profile,
+                              savedDiscountLabels: filtered,
+                            });
+                          }}
+                          className="text-slate-400 hover:text-rose-600 font-bold"
+                          title="Rimuovi dicitura"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
                   </div>
                 </div>
               </div>
