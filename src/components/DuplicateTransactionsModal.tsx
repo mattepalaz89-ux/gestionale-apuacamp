@@ -13,7 +13,7 @@ import {
   Sparkles,
   ShieldCheck,
 } from 'lucide-react';
-import { DuplicateTransactionGroup } from '../types';
+import { DuplicateTransactionGroup, DuplicateDetectionMode } from '../types';
 import { formatEuro } from '../utils/finance';
 
 interface DuplicateTransactionsModalProps {
@@ -22,9 +22,12 @@ interface DuplicateTransactionsModalProps {
   duplicateGroups: DuplicateTransactionGroup[];
   onDeleteTransactions: (transactionIds: string[]) => void;
   onIgnoreGroupSignature: (signature: string) => void;
+  onIgnoreAllGroups?: (signatures: string[]) => void;
   ignoredCount: number;
   onResetIgnoredGroups: () => void;
   onLoadSampleDuplicates?: () => void;
+  duplicateDetectionMode?: DuplicateDetectionMode;
+  onChangeDuplicateDetectionMode?: (mode: DuplicateDetectionMode) => void;
 }
 
 export const DuplicateTransactionsModal: React.FC<DuplicateTransactionsModalProps> = ({
@@ -33,9 +36,12 @@ export const DuplicateTransactionsModal: React.FC<DuplicateTransactionsModalProp
   duplicateGroups,
   onDeleteTransactions,
   onIgnoreGroupSignature,
+  onIgnoreAllGroups,
   ignoredCount,
   onResetIgnoredGroups,
   onLoadSampleDuplicates,
+  duplicateDetectionMode = 'strict',
+  onChangeDuplicateDetectionMode,
 }) => {
   // Set of transaction IDs currently flagged (checked) for deletion
   const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set());
@@ -201,6 +207,40 @@ export const DuplicateTransactionsModal: React.FC<DuplicateTransactionsModalProp
           </div>
         )}
 
+        {/* Detection Sensitivity & Mode Selector Bar */}
+        {onChangeDuplicateDetectionMode && (
+          <div className="bg-white border-b border-slate-200 px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+            <div className="text-slate-700 font-semibold flex items-center gap-1.5">
+              <span>Modalità Controllo Anti-Duplicati:</span>
+              <span className="text-[11px] font-normal text-slate-500">
+                (richiede sempre Nome + Cognome verificato, ignora causali generiche)
+              </span>
+            </div>
+            <div className="inline-flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
+              {[
+                { id: 'strict', label: 'Attivo (Entro 7 gg)' },
+                { id: 'same_day', label: 'Solo Stesso Giorno (0 gg)' },
+                { id: 'off', label: 'Disattivato (Non avvisare)' },
+              ].map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => onChangeDuplicateDetectionMode(m.id as DuplicateDetectionMode)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${
+                    duplicateDetectionMode === m.id
+                      ? m.id === 'off'
+                        ? 'bg-slate-800 text-white'
+                        : 'bg-emerald-700 text-white'
+                      : 'text-slate-600 hover:bg-white hover:text-slate-900'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Sticky Bulk Selection & Action Toolbar */}
         {duplicateGroups.length > 0 && (
           <div className="bg-slate-50 border-b border-slate-200 px-6 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -214,9 +254,30 @@ export const DuplicateTransactionsModal: React.FC<DuplicateTransactionsModalProp
               >
                 <CheckSquare className="w-3.5 h-3.5 text-amber-800" />
                 <span>
-                  Seleziona Tutti i Duplicati Suggeriti ({suggestedDuplicateIds.length})
+                  Seleziona Duplicati Suggeriti ({suggestedDuplicateIds.length})
                 </span>
               </button>
+
+              {onIgnoreAllGroups && (
+                <button
+                  id="btn-ignore-all-duplicate-groups"
+                  type="button"
+                  onClick={() => {
+                    const allSigs = duplicateGroups.map((g) => g.signature);
+                    onIgnoreAllGroups(allSigs);
+                    setFeedbackBanner(
+                      `Segnati come verificati e ignorati tutti i ${allSigs.length} gruppi in lista! Non verranno più segnalati.`
+                    );
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-900 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-lg transition-colors"
+                  title="Se i movimenti rimasti in lista sono tutti validi (non duplicati), clicca qui per ignorarli tutti in un colpo solo"
+                >
+                  <EyeOff className="w-3.5 h-3.5 text-emerald-800" />
+                  <span>
+                    Non sono duplicati: Ignora Tutti ({duplicateGroups.length})
+                  </span>
+                </button>
+              )}
 
               <button
                 id="btn-select-all-group-rows"

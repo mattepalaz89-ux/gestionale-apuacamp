@@ -1250,8 +1250,108 @@ describe('Sortable Members, Event Discounts (Fixed € / %), Vouchers & Smart Re
     assert.ok(emailTemplates.ricevuta_evento);
     assert.ok(emailTemplates.ricevuta_doposcuola);
   });
+
+  it('never flags generic non-person movements as duplicates and supports same_day / off modes and editable proposed deadlines', () => {
+    const genericTxs: CashTransaction[] = [
+      {
+        id: 'gen-1',
+        date: '2027-02-10',
+        category: 'Tessere',
+        income: 15,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Quota Tessera Base US ACLI',
+      },
+      {
+        id: 'gen-2',
+        date: '2027-02-11',
+        category: 'Tessere',
+        income: 15,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Quota Tessera Base US ACLI',
+      },
+      {
+        id: 'gen-3',
+        date: '2027-02-12',
+        category: 'Evento',
+        income: 130,
+        expense: null,
+        method: 'Contanti',
+        description: 'Caparra Rifugio Del Freo Mosceta',
+      },
+      {
+        id: 'gen-4',
+        date: '2027-02-12',
+        category: 'Evento',
+        income: 130,
+        expense: null,
+        method: 'Contanti',
+        description: 'Caparra Rifugio Del Freo Mosceta',
+      },
+      {
+        id: 'real-dup-1',
+        date: '2027-02-12',
+        category: 'Evento',
+        income: 130,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Caparra Rifugio Marco Bianchi',
+      },
+      {
+        id: 'real-dup-2',
+        date: '2027-02-14',
+        category: 'Evento',
+        income: 130,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Iscrizione Rifugio Bianchi Marco',
+      },
+    ];
+
+    // Strict mode: only Marco Bianchi is flagged, generic movements are ignored
+    const strictGroups = detectDuplicateTransactions(genericTxs, [], [], 7, [], 'strict');
+    assert.equal(strictGroups.length, 1);
+    assert.ok(strictGroups[0].personName.toLowerCase().includes('bianchi'));
+
+    // Same-day mode: Marco Bianchi is 2 days apart so 0 groups in same_day mode
+    const sameDayGroups = detectDuplicateTransactions(genericTxs, [], [], 7, [], 'same_day');
+    assert.equal(sameDayGroups.length, 0);
+
+    // Off mode: 0 groups
+    const offGroups = detectDuplicateTransactions(genericTxs, [], [], 7, [], 'off');
+    assert.equal(offGroups.length, 0);
+
+    // Editable proposed statutory deadline (e.g. changing annual assembly date and title)
+    const refDate = new Date(2027, 1, 1);
+    const modifiedDeadlines = buildCriticalYearDeadlines({
+      activeYear: 2027,
+      referenceDate: refDate,
+      deadlineOverrides: {
+        'std-assemblea-bilancio': {
+          deadlineId: 'std-assemblea-bilancio',
+          customTitle: 'Riunione Annuale Soci Apuacamp (Data Scelta)',
+          customDueDate: '2027-06-20',
+          customDueDateLabel: 'Data Annuale ASD',
+          isPermanentDateChange: true,
+          updatedAt: '2027-02-01',
+        },
+        'std-cu-lavoro-sportivo': {
+          deadlineId: 'std-cu-lavoro-sportivo',
+          isHidden: true,
+          updatedAt: '2027-02-01',
+        },
+      },
+    });
+
+    const asmDl = modifiedDeadlines.deadlines.find((d) => d.id === 'std-assemblea-bilancio');
+    assert.ok(asmDl);
+    assert.equal(asmDl!.title, 'Riunione Annuale Soci Apuacamp (Data Scelta)');
+    assert.equal(asmDl!.dueDate, '2027-06-20');
+    assert.ok(asmDl!.dueDateLabel.includes('Data Annuale ASD'));
+
+    // Hidden proposed deadline should not appear in active list
+    const hiddenCu = modifiedDeadlines.deadlines.find((d) => d.id === 'std-cu-lavoro-sportivo');
+    assert.equal(hiddenCu, undefined);
+  });
 });
-
-
-
-

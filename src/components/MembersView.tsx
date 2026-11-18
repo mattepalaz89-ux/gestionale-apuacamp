@@ -839,22 +839,11 @@ export const MembersView: React.FC<MembersViewProps> = ({
         <div className="space-y-5">
           {/* Explanation & Quick Issue Card */}
           <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-4">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-              <div>
-                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-                  <CalendarCheck className="w-5 h-5 text-emerald-600" />
-                  Gestione Emissione Tessere Nuove, Rinnovi & Formula "Tessera 365"
-                </h3>
-                <p className="text-xs text-slate-600 mt-1">
-                  Rinnova le tessere scadute o assegna una nuova tessera a un socio. Puoi scegliere
-                  tra <strong>Tessera Ordinaria (scadenza 31 Dicembre)</strong> e{' '}
-                  <strong>
-                    Tessera 365 (scadenza lo stesso giorno dell'anno successivo — attivabile solo
-                    dal 1° Settembre in avanti)
-                  </strong>
-                  .
-                </p>
-              </div>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-slate-900 text-sm sm:text-base flex items-center gap-2">
+                <CalendarCheck className="w-4 h-4 text-emerald-600" />
+                Emissione Tessere, Rinnovi & Formula &quot;Tessera 365&quot;
+              </h3>
               <div className="flex items-center gap-3 shrink-0">
                 <div className="px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-xs">
                   <span className="text-slate-600 block text-[10px] uppercase font-bold">

@@ -591,11 +591,18 @@ export interface NotificationResolutionRecord {
 
 export interface DeadlineOverrideRecord {
   deadlineId: string;
-  customDueDate?: string; // YYYY-MM-DD when postponed/rescheduled
+  customTitle?: string; // Custom title set by the ASD for a proposed/statutory deadline
+  customDescription?: string; // Custom description set by the ASD
+  customDueDate?: string; // YYYY-MM-DD when rescheduled or permanently changed
+  customDueDateLabel?: string; // Custom label (e.g. "Data Annuale ASD" or "Rimandata")
+  isPermanentDateChange?: boolean; // True when the ASD permanently changed the recurring/statutory date
+  isHidden?: boolean; // True if the ASD chose to hide/delete this proposed deadline
   resolutionNote?: string; // User-typed note when resolved or postponed
   isCompleted?: boolean;
   updatedAt: string;
 }
+
+export type DuplicateDetectionMode = 'strict' | 'same_day' | 'off';
 
 export type ReceiptLineItemCategory =
   | 'evento'
@@ -662,6 +669,8 @@ export interface AssociationProfile {
   deadlineOverrides?: Record<string, DeadlineOverrideRecord>;
   notificationResolutions?: Record<string, NotificationResolutionRecord>;
   hideResolvedDeadlines?: boolean;
+  duplicateDetectionMode?: DuplicateDetectionMode;
+  ignoredDuplicateSignatures?: string[];
 }
 
 export interface CashFlowSummary {

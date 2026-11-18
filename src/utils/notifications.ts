@@ -12,6 +12,7 @@ import {
   PreEventBriefing,
   PreEventParticipantAlert,
   CustomCriticalDeadline,
+  DuplicateDetectionMode,
 } from '../types';
 import { detectDuplicateTransactions } from './duplicates';
 import { formatEuro } from './finance';
@@ -204,7 +205,8 @@ export function generateSystemNotifications(
   ignoredDuplicateSignatures: string[] = [],
   notificationResolutions?: Record<string, NotificationResolutionRecord>,
   customDeadlines: CustomCriticalDeadline[] = [],
-  completedDeadlineIds: string[] = []
+  completedDeadlineIds: string[] = [],
+  duplicateDetectionMode: DuplicateDetectionMode = 'strict'
 ): NotificationItem[] {
   const notifications: NotificationItem[] = [];
   const completedSet = new Set(completedDeadlineIds);
@@ -215,7 +217,8 @@ export function generateSystemNotifications(
     members,
     [],
     7,
-    ignoredDuplicateSignatures
+    ignoredDuplicateSignatures,
+    duplicateDetectionMode
   );
   for (const grp of duplicateGroups) {
     const datesStr = grp.allTransactions.map((t) => t.date).join(' vs ');

@@ -552,12 +552,22 @@ export function buildCriticalYearDeadlines(params: {
     });
   }
 
-  // Apply any user-configured deadlineOverrides (postponed dueDate or typed resolutionNote)
+  // Apply any user-configured deadlineOverrides (modified title, description, permanent date change, postponed dueDate, typed resolutionNote, or hidden)
+  const finalItems: CriticalDeadlineItem[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const ov = deadlineOverrides[item.id];
-    if (!ov) continue;
+    if (!ov) {
+      finalItems.push(item);
+      continue;
+    }
 
+    if (ov.isHidden) {
+      continue;
+    }
+
+    let nextTitle = ov.customTitle?.trim() ? ov.customTitle.trim() : item.title;
+    let baseDesc = ov.customDescription?.trim() ? ov.customDescription.trim() : item.description;
     let nextDueDate = item.dueDate;
     let nextDueDateLabel = item.dueDateLabel;
     let nextDaysRemaining = item.daysRemaining;
@@ -567,7 +577,12 @@ export function buildCriticalYearDeadlines(params: {
       const parsedCustom = parseAnyDate(ov.customDueDate);
       if (parsedCustom) {
         nextDueDate = ov.customDueDate;
-        nextDueDateLabel = `${formatItalianShortDate(ov.customDueDate)} (Rimandata)`;
+        const suffixLabel = ov.customDueDateLabel?.trim()
+          ? ov.customDueDateLabel.trim()
+          : ov.isPermanentDateChange
+          ? 'Data Scelta ASD'
+          : 'Rimandata';
+        nextDueDateLabel = `${formatItalianShortDate(ov.customDueDate)} (${suffixLabel})`;
         nextDaysRemaining = diffDays(parsedCustom, referenceDate);
         nextYearPos = getDayOfYear(parsedCustom).percent;
       }
@@ -582,11 +597,12 @@ export function buildCriticalYearDeadlines(params: {
     );
     const nextStatus = getDeadlineStatus(nextDaysRemaining, nextCompleted);
     const nextDesc = ov.resolutionNote
-      ? `[Nota registrata: "${ov.resolutionNote}"] — ${item.description}`
-      : item.description;
+      ? `[Nota registrata: "${ov.resolutionNote}"] — ${baseDesc}`
+      : baseDesc;
 
-    items[i] = {
+    finalItems.push({
       ...item,
+      title: nextTitle,
       dueDate: nextDueDate,
       dueDateLabel: nextDueDateLabel,
       daysRemaining: nextDaysRemaining,
@@ -595,11 +611,11 @@ export function buildCriticalYearDeadlines(params: {
       status: nextStatus,
       isCompleted: nextCompleted,
       description: nextDesc,
-    };
+    });
   }
 
   // Sort items: non-completed first ordered by daysRemaining ascending, then completed items
-  items.sort((a, b) => {
+  finalItems.sort((a, b) => {
     if (a.isCompleted !== b.isCompleted) {
       return a.isCompleted ? 1 : -1;
     }
@@ -607,8 +623,8 @@ export function buildCriticalYearDeadlines(params: {
   });
 
   const yearStats = getDayOfYear(referenceDate);
-  const completedCount = items.filter((i) => i.isCompleted).length;
-  const urgentOrOverdueCount = items.filter(
+  const completedCount = finalItems.filter((i) => i.isCompleted).length;
+  const urgentOrOverdueCount = finalItems.filter(
     (i) => !i.isCompleted && (i.status === 'urgent' || i.status === 'overdue')
   ).length;
 
@@ -624,11 +640,11 @@ export function buildCriticalYearDeadlines(params: {
     endOfCurrentMonthDate: endOfCurrentMonthIso,
     endOfCurrentMonthLabel: formatItalianShortDate(endOfCurrentMonthIso),
     completedCount,
-    totalDeadlinesCount: items.length,
+    totalDeadlinesCount: finalItems.length,
     completionRatePercent:
-      items.length > 0 ? Math.round((completedCount / items.length) * 100) : 0,
+      finalItems.length > 0 ? Math.round((completedCount / finalItems.length) * 100) : 0,
     urgentOrOverdueCount,
   };
 
-  return { deadlines: items, summary };
+  return { deadlines: finalItems, summary };
 }

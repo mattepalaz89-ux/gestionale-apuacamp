@@ -84,67 +84,26 @@ export const Header: React.FC<HeaderProps> = ({
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const [isYearMenuOpen, setIsYearMenuOpen] = useState(false);
 
-  const tabLabels: Record<NavTab, { title: string; subtitle: string }> = {
-    dashboard: {
-      title: 'Dashboard Finanziaria',
-      subtitle: 'Panoramica economica globale, entrate, uscite e scadenze anno solare',
-    },
-    cashflow: {
-      title: 'Flusso di Cassa & Contabilità',
-      subtitle: 'Registro transazioni con scelta data, spese ricorrenti e import/export Excel',
-    },
-    members: {
-      title: 'Anagrafica Soci',
-      subtitle: 'Dati anagrafici, schede sanitarie, allergie, liberatorie foto e Moduli Google',
-    },
-    cards: {
-      title: 'Tessere US ACLI & Coperture Assicurative',
-      subtitle: 'Gestione dedicata delle sole tessere, Tessera 365, rinnovi e Tessera Digitale',
-    },
-    events: {
-      title: 'Eventi, Campi Estivi & Briefing Sicurezza',
-      subtitle: 'Prenotazioni, coordinamento automatico anagrafica/tessere e Moduli Google',
-    },
-    gadgets: {
-      title: 'Gadget & Prenotazioni',
-      subtitle: 'Catalogo articoli associativi, taglie, consegne e tracciamento email conferma',
-    },
-    staff: {
-      title: 'Staff & Compensi',
-      subtitle: 'Collaboratori sportivi, rimborsi spese e ricevute di prestazione',
-    },
-    grants: {
-      title: 'Bandi, Contributi & Progetti ASD',
-      subtitle:
-        'Scadenze presentazione e rendicontazione, caratteristiche, contatti utili e documenti su Drive',
-    },
-    governance: {
-      title: 'Governance, Cariche Associative & Assemblea Annuale',
-      subtitle:
-        'Consiglio Direttivo, Tutela Minori (Safeguarding), Sicurezza e Verbali su Google Drive',
-    },
-    receipts_config: {
-      title: 'Pannello Configurazione Ricevute, Campi Dinamici & Overlay PDF',
-      subtitle:
-        'Personalizzazione modelli PDF (Standard, Minimal, Ufficiale), variabili e Timbro/Firma',
-    },
-    notifications: {
-      title: 'Centro Scadenze, Briefing Eventi & Email da Inviare',
-      subtitle:
-        'Alert tessere per iscritti alle attività, allergie, email non inviate e scadenze ASD',
-    },
-    backup: {
-      title: 'Archivio Anni, Google Drive, File Locale PC & Profilo ASD',
-      subtitle:
-        'Salvataggio su Google Drive o File Locale PC (OneDrive/Dropbox), chiusura anni e multi-ASD',
-    },
+  const tabLabels: Record<NavTab, { title: string }> = {
+    dashboard: { title: 'Dashboard' },
+    cashflow: { title: 'Flusso di Cassa' },
+    members: { title: 'Anagrafica Soci' },
+    cards: { title: 'Tessere & Coperture' },
+    events: { title: 'Eventi & Campi Estivi' },
+    gadgets: { title: 'Gadget & Prenotazioni' },
+    staff: { title: 'Staff & Compensi' },
+    grants: { title: 'Bandi & Progetti' },
+    governance: { title: 'Governance & Verbali' },
+    receipts_config: { title: 'Modelli Ricevute & Mail' },
+    notifications: { title: 'Scadenze & Notifiche' },
+    backup: { title: 'Archivio & Impostazioni ASD' },
   };
 
   const currentTab = tabLabels[activeTab] || tabLabels.dashboard;
 
   return (
-    <header className="no-print bg-white border-b border-slate-200 px-3 sm:px-6 py-3 flex items-center justify-between gap-3 sticky top-0 z-20 shadow-xs">
-      {/* Zone 1: Hamburger Menu (Mobile/Tablet) + Breadcrumb with Discreet Clickable Year + Title */}
+    <header className="no-print bg-white border-b border-slate-200 px-3 sm:px-6 py-2.5 flex items-center justify-between gap-3 sticky top-0 z-20">
+      {/* Zone 1: Hamburger Menu (Mobile/Tablet) + Clean Page Title + Clickable Year */}
       <div className="flex items-center gap-2.5 min-w-0">
         {onOpenMobileMenu && (
           <button
@@ -159,86 +118,71 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-[11px] sm:text-xs text-slate-500 font-medium">
-            <button
-              onClick={() => setActiveTab('backup')}
-              className="hidden sm:inline hover:text-emerald-700 hover:underline truncate max-w-[140px] sm:max-w-[200px]"
-              title="Configura i dati della tua ASD"
-            >
-              {associationName}
-            </button>
-            <span className="hidden sm:inline">·</span>
-
-            {/* Discreet Clickable Year Badge (Soluzione 3) */}
-            <div className="relative inline-block shrink-0">
-              <button
-                id="btn-header-year-picker"
-                type="button"
-                onClick={() => setIsYearMenuOpen((prev) => !prev)}
-                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 font-mono font-bold text-[11px] whitespace-nowrap transition-colors"
-                title="Clicca sull'anno per cambiare l'anno sportivo attivo o consultare l'archivio degli anni passati"
-              >
-                <Calendar className="w-3 h-3 text-emerald-700 shrink-0" />
-                <span>Anno {activeYear} ▾</span>
-              </button>
-
-              {isYearMenuOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-30"
-                    onClick={() => setIsYearMenuOpen(false)}
-                  />
-                  <div className="absolute left-0 mt-1.5 w-60 bg-white rounded-xl shadow-lg border border-slate-200 p-3 z-40 space-y-2.5 text-xs">
-                    <div className="font-bold text-slate-800 text-[11px]">
-                      Anno Sportivo Attivo
-                    </div>
-                    <div className="grid grid-cols-4 gap-1">
-                      {[2026, 2027, 2028, 2029].map((yr) => (
-                        <button
-                          key={yr}
-                          id={`btn-header-select-year-${yr}`}
-                          type="button"
-                          onClick={() => {
-                            if (onChangeActiveYear) onChangeActiveYear(yr);
-                            setIsYearMenuOpen(false);
-                          }}
-                          className={`py-1.5 rounded-lg font-mono font-bold text-xs border transition-colors ${
-                            activeYear === yr
-                              ? 'bg-emerald-700 text-white border-emerald-700'
-                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-emerald-50 hover:border-emerald-300'
-                          }`}
-                        >
-                          {yr}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                      <span className="text-[10px] text-slate-400">Archivio & Chiusura</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsYearMenuOpen(false);
-                          setActiveTab('backup');
-                        }}
-                        className="text-[11px] font-semibold text-emerald-700 hover:underline"
-                      >
-                        Archivio Anni Passati →
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <span className="hidden sm:inline">/</span>
-            <span className="hidden sm:inline text-emerald-700 font-semibold truncate">
-              {currentTab.title}
-            </span>
-          </div>
-          <h2 className="text-sm sm:text-lg font-bold text-slate-900 tracking-tight truncate">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <h2 className="text-sm sm:text-base font-bold text-slate-900 tracking-tight truncate">
             {currentTab.title}
           </h2>
+
+          {/* Discreet Clickable Year Badge */}
+          <div className="relative inline-block shrink-0">
+            <button
+              id="btn-header-year-picker"
+              type="button"
+              onClick={() => setIsYearMenuOpen((prev) => !prev)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 font-mono font-bold text-[11px] whitespace-nowrap transition-colors"
+              title="Clicca sull'anno per cambiare l'anno sportivo attivo o consultare l'archivio degli anni passati"
+            >
+              <Calendar className="w-3 h-3 text-emerald-700 shrink-0" />
+              <span>{activeYear} ▾</span>
+            </button>
+
+            {isYearMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setIsYearMenuOpen(false)}
+                />
+                <div className="absolute left-0 mt-1.5 w-60 bg-white rounded-xl shadow-lg border border-slate-200 p-3 z-40 space-y-2.5 text-xs">
+                  <div className="font-bold text-slate-800 text-[11px]">
+                    Anno Sportivo Attivo ({associationName})
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {[2026, 2027, 2028, 2029].map((yr) => (
+                      <button
+                        key={yr}
+                        id={`btn-header-select-year-${yr}`}
+                        type="button"
+                        onClick={() => {
+                          if (onChangeActiveYear) onChangeActiveYear(yr);
+                          setIsYearMenuOpen(false);
+                        }}
+                        className={`py-1.5 rounded-lg font-mono font-bold text-xs border transition-colors ${
+                          activeYear === yr
+                            ? 'bg-emerald-700 text-white border-emerald-700'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-emerald-50 hover:border-emerald-300'
+                        }`}
+                      >
+                        {yr}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                    <span className="text-[10px] text-slate-400">Archivio & Chiusura</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsYearMenuOpen(false);
+                        setActiveTab('backup');
+                      }}
+                      className="text-[11px] font-semibold text-emerald-700 hover:underline"
+                    >
+                      Archivio Anni Passati →
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 

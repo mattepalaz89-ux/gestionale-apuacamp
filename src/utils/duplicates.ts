@@ -1,5 +1,6 @@
 import {
   CashTransaction,
+  DuplicateDetectionMode,
   DuplicateTransactionGroup,
   Member,
   StaffMember,
@@ -18,55 +19,169 @@ const ASD_BOILERPLATE_STOPWORDS = new Set([
   'annuale',
   'caparra',
   'acconto',
+  'anticipo',
   'saldo',
+  'totale',
+  'intera',
+  'completa',
   'iscrizione',
+  'iscrizioni',
   'evento',
+  'eventi',
   'escursione',
+  'escursioni',
+  'trekking',
+  'uscita',
+  'uscite',
   'rifugio',
   'summer',
   'camp',
   'summercamp',
   'wild',
   'selva',
+  'academy',
+  'branco',
+  'progetto',
+  'doposcuola',
+  'laboratorio',
+  'laboratori',
+  'attivita',
+  'invernale',
+  'estivo',
+  'estiva',
+  'primaverile',
+  'autunnale',
+  'settimana',
+  'settimanale',
+  'mensile',
+  'giornaliero',
+  'giornaliera',
+  'giornata',
+  'weekend',
+  'turno',
+  'primo',
+  'secondo',
+  'terzo',
+  'quarto',
+  'rata',
+  'rate',
+  'gennaio',
+  'febbraio',
+  'marzo',
+  'aprile',
+  'maggio',
+  'giugno',
+  'luglio',
+  'agosto',
+  'settembre',
+  'ottobre',
+  'novembre',
+  'dicembre',
   'bonifico',
   'bancario',
+  'banca',
+  'conto',
+  'corrente',
+  'cassa',
   'contanti',
+  'contante',
   'pos',
   'bancomat',
+  'carta',
   'paypal',
   'pagamento',
   'pagam',
   'online',
   'versamento',
   'incasso',
+  'entrata',
+  'entrate',
+  'spesa',
+  'spese',
+  'acquisto',
+  'acquisti',
+  'materiale',
+  'materiali',
+  'attrezzatura',
+  'alimentari',
+  'merenda',
+  'pranzo',
+  'cena',
+  'pernottamento',
+  'notte',
   'ricevuta',
   'fattura',
   'rimborso',
-  'spese',
   'compenso',
+  'compensi',
   'collaborazione',
   'sportiva',
+  'sportivo',
   'staff',
+  'istruttore',
+  'istruttori',
+  'educatore',
+  'educatori',
+  'guida',
+  'guide',
   'gadget',
   'maglietta',
+  'magliette',
   'tazza',
+  'tazze',
   'cappellino',
   'felpa',
+  'zaino',
+  'zainetto',
+  'sacco',
   'usacli',
   'acli',
+  'coni',
+  'rasd',
   'base',
   'gold',
   'platinum',
   'extra',
   'assicurazione',
+  'assicurativa',
   'integrativa',
+  'copertura',
+  'rinnovo',
+  'nuovo',
+  'nuova',
   'socio',
   'soci',
   'bimbo',
   'bambino',
+  'bambini',
   'ragazzo',
+  'ragazzi',
   'genitore',
+  'genitori',
   'famiglia',
+  'fratelli',
+  'fratello',
+  'sorella',
+  'sconto',
+  'riduzione',
+  'isee',
+  'buono',
+  'voucher',
+  'contributo',
+  'erogazione',
+  'liberale',
+  'donazione',
+  'bando',
+  'servizi',
+  'esterni',
+  'tasse',
+  'formalita',
+  'bollo',
+  'imposta',
+  'commissione',
+  'commissioni',
+  'f24',
+  'inps',
   'del',
   'dello',
   'della',
@@ -114,6 +229,27 @@ const ASD_BOILERPLATE_STOPWORDS = new Set([
   'od',
   'freo',
   'mosceta',
+  'forte',
+  'marmi',
+  'massa',
+  'carrara',
+  'pietrasanta',
+  'seravezza',
+  'camaiore',
+  'viareggio',
+  'lucca',
+  'lunigiana',
+  'garfagnana',
+  'apuane',
+  'alpi',
+  'pania',
+  'forato',
+  'procinto',
+  'matanna',
+  'monte',
+  'bosco',
+  'natura',
+  'outdoor',
   'apuacamp',
   'asd',
 ]);
@@ -141,10 +277,14 @@ export interface ExtractedTransactionIdentity {
   displayPersonName: string;
   meaningfulTokens: string[];
   normalizedFullDescription: string;
+  isVerifiedPerson: boolean;
 }
 
 /**
- * Extracts the referred person (via relatedMemberName, known Member/Staff registry, or meaningful name tokens in description)
+ * Extracts the referred person strictly from:
+ * 1) Explicit relatedMemberName (with at least 2 name tokens)
+ * 2) Registered Member (childName or parentName with >= 2 tokens) or StaffMember
+ * 3) Distinct two-token personal name (Nome + Cognome) remaining after stripping all ASD/event/location/month stopwords
  */
 export function extractTransactionIdentity(
   tx: CashTransaction,
@@ -158,25 +298,29 @@ export function extractTransactionIdentity(
   // 1. Check explicit relatedMemberName first
   if (tx.relatedMemberName && tx.relatedMemberName.trim()) {
     const normRelated = normalizeTextForMatching(tx.relatedMemberName);
-    const relTokens = normRelated.split(' ').filter((t) => t.length >= 2);
-    if (relTokens.length > 0) {
+    const relTokens = normRelated
+      .split(' ')
+      .filter((t) => t.length >= 2 && !ASD_BOILERPLATE_STOPWORDS.has(t));
+    if (relTokens.length >= 2) {
       const sortedKey = [...relTokens].sort().join('_');
       return {
         canonicalPersonKey: `person:${sortedKey}`,
         displayPersonName: toTitleCase(tx.relatedMemberName.trim()),
         meaningfulTokens: relTokens,
         normalizedFullDescription: normDesc,
+        isVerifiedPerson: true,
       };
     }
   }
 
-  // 2. Check against known Members (childName or parentName) and Staff
+  // 2. Check against known Members (childName or parentName) and Staff (requires both first & last name tokens)
   for (const m of members) {
     const candidates = [m.childName, m.parentName].filter(Boolean);
     for (const candidate of candidates) {
       const normCand = normalizeTextForMatching(candidate);
       const candTokens = normCand.split(' ').filter((t) => t.length >= 2);
       if (candTokens.length >= 2 && candTokens.every((t) => descTokenSet.has(t))) {
+        // Use the member's ID or full childName tokens so two brothers with the same parent are only grouped if same child or parent is referenced
         const sortedKey = [...candTokens].sort().join('_');
         return {
           canonicalPersonKey: `person:${sortedKey}`,
@@ -187,6 +331,7 @@ export function extractTransactionIdentity(
             : toTitleCase(candidate),
           meaningfulTokens: candTokens,
           normalizedFullDescription: normDesc,
+          isVerifiedPerson: true,
         };
       }
     }
@@ -203,53 +348,49 @@ export function extractTransactionIdentity(
         displayPersonName: s.name,
         meaningfulTokens: staffTokens,
         normalizedFullDescription: normDesc,
+        isVerifiedPerson: true,
       };
     }
   }
 
-  // 3. Extract meaningful non-boilerplate tokens from the description
+  // 3. Extract remaining personal name tokens (must be >= 2 alphabetic words of length >= 3 that are NOT stopwords or numbers)
   const meaningfulTokens = descTokens.filter(
     (t) =>
-      t.length >= 2 &&
-      !/^\d+$/.test(t) &&
+      t.length >= 3 &&
+      /^[a-z]+$/.test(t) &&
       !ASD_BOILERPLATE_STOPWORDS.has(t)
   );
 
   if (meaningfulTokens.length >= 2) {
-    // Take the last 2-3 tokens as the likely person name (e.g., "Caparra Rifugio Del Freo Mario Rossi" -> "Mario Rossi")
+    // Take the last 2 tokens as the person's full name (e.g., "Caparra Rifugio Del Freo Mario Rossi" -> "Mario Rossi")
     const personSlice = meaningfulTokens.slice(-2);
     const sortedKey = [...personSlice].sort().join('_');
     return {
-      canonicalPersonKey: `tokens:${sortedKey}`,
+      canonicalPersonKey: `person:${sortedKey}`,
       displayPersonName: toTitleCase(personSlice.join(' ')),
-      meaningfulTokens,
+      meaningfulTokens: personSlice,
       normalizedFullDescription: normDesc,
+      isVerifiedPerson: true,
     };
   }
 
-  if (meaningfulTokens.length === 1) {
-    return {
-      canonicalPersonKey: `token:${meaningfulTokens[0]}`,
-      displayPersonName: toTitleCase(meaningfulTokens[0]),
-      meaningfulTokens,
-      normalizedFullDescription: normDesc,
-    };
-  }
-
+  // If fewer than 2 personal name tokens exist, this is a generic movement (e.g. "Quota Tessera", "Summer Camp", "Spesa Conad")
+  // and must NOT be treated as a named person!
   return {
     canonicalPersonKey: null,
     displayPersonName: tx.description?.trim() || tx.category,
     meaningfulTokens: [],
     normalizedFullDescription: normDesc,
+    isVerifiedPerson: false,
   };
 }
 
 /**
- * Checks whether two transactions represent a potential duplicate:
+ * Checks whether two transactions represent a true potential duplicate:
  * - Same direction (both income or both expense)
  * - Exact same positive amount (within € 0.005)
  * - Within maxDaysWindow days of each other (default 7 days max)
- * - Referring to the same person or having high movement similarity
+ * - Strictly referring to the EXACT SAME person (Nome + Cognome, >= 2 shared name tokens)
  */
 export function areTransactionsPotentialDuplicates(
   txA: CashTransaction,
@@ -259,6 +400,16 @@ export function areTransactionsPotentialDuplicates(
   maxDaysWindow: number = 7
 ): { isDuplicate: boolean; daysApart: number; personName: string; reason: string } {
   if (txA.id === txB.id) {
+    return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
+  }
+
+  // Never flag auto-generated recurring installments of different dates as duplicates
+  if (
+    txA.recurringPlanId &&
+    txB.recurringPlanId &&
+    txA.recurringPlanId === txB.recurringPlanId &&
+    txA.recurringInstallmentNumber !== txB.recurringInstallmentNumber
+  ) {
     return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
   }
 
@@ -278,7 +429,7 @@ export function areTransactionsPotentialDuplicates(
     return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
   }
 
-  // Check date proximity (within 7 days maximum)
+  // Check date proximity (within maxDaysWindow days maximum)
   const dateA = parseAnyDate(txA.date);
   const dateB = parseAnyDate(txB.date);
   let daysApart = 0;
@@ -295,75 +446,40 @@ export function areTransactionsPotentialDuplicates(
   const idA = extractTransactionIdentity(txA, members, staff);
   const idB = extractTransactionIdentity(txB, members, staff);
 
+  // If either movement does NOT identify a specific person (Nome + Cognome), do NOT flag generic movements as duplicates!
+  if (!idA.isVerifiedPerson || !idB.isVerifiedPerson || !idA.canonicalPersonKey || !idB.canonicalPersonKey) {
+    return { isDuplicate: false, daysApart, personName: '', reason: '' };
+  }
+
   const daysText =
     daysApart === 0
       ? 'nello stesso giorno'
       : daysApart === 1
       ? 'a 1 giorno di distanza'
-      : `a ${daysApart} giorni di distanza (entro 7 gg)`;
+      : `a ${daysApart} giorni di distanza (entro ${maxDaysWindow} gg)`;
 
-  // Case 1: Identical canonical person key
-  if (idA.canonicalPersonKey && idA.canonicalPersonKey === idB.canonicalPersonKey) {
+  // Case 1: Identical canonical person key (both first and last name match)
+  if (idA.canonicalPersonKey === idB.canonicalPersonKey) {
     return {
       isDuplicate: true,
       daysApart,
       personName: idA.displayPersonName,
-      reason: `Stesso riferimento (${idA.displayPersonName}) e stesso importo (${formatEuro(
+      reason: `Stessa persona (${idA.displayPersonName}) e stesso importo (${formatEuro(
         amountA
       )}) ${daysText}`,
     };
   }
 
-  // Case 2: At least 2 shared meaningful tokens (e.g. first name + last name even with extra words)
-  if (idA.meaningfulTokens.length > 0 && idB.meaningfulTokens.length > 0) {
-    const setB = new Set(idB.meaningfulTokens);
-    const shared = idA.meaningfulTokens.filter((t) => setB.has(t));
-
-    if (shared.length >= 2) {
-      const displayPerson = toTitleCase(shared.slice(-2).join(' '));
-      return {
-        isDuplicate: true,
-        daysApart,
-        personName: displayPerson,
-        reason: `Stessa persona/riferimento (${displayPerson}) e stesso importo (${formatEuro(
-          amountA
-        )}) ${daysText}`,
-      };
-    }
-
-    // If one or both have only 1 meaningful token (e.g. surname only "Rossi") and they share it in the same category
-    if (
-      shared.length === 1 &&
-      shared[0].length >= 3 &&
-      (txA.category === txB.category ||
-        idA.meaningfulTokens.length === 1 ||
-        idB.meaningfulTokens.length === 1)
-    ) {
-      const displayPerson =
-        idA.meaningfulTokens.length >= idB.meaningfulTokens.length
-          ? idA.displayPersonName
-          : idB.displayPersonName;
-      return {
-        isDuplicate: true,
-        daysApart,
-        personName: displayPerson,
-        reason: `Movimenti simili riferiti a "${displayPerson}" dello stesso importo (${formatEuro(
-          amountA
-        )}) ${daysText}`,
-      };
-    }
-  }
-
-  // Case 3: Identical normalized description
-  if (
-    idA.normalizedFullDescription.length >= 3 &&
-    idA.normalizedFullDescription === idB.normalizedFullDescription
-  ) {
+  // Case 2: Both have at least 2 shared personal name tokens (e.g. "Mario Rossi" in both)
+  const setB = new Set(idB.meaningfulTokens);
+  const shared = idA.meaningfulTokens.filter((t) => setB.has(t));
+  if (shared.length >= 2) {
+    const displayPerson = toTitleCase(shared.slice(-2).join(' '));
     return {
       isDuplicate: true,
       daysApart,
-      personName: idA.displayPersonName,
-      reason: `Causale identica ("${txA.description}") e stesso importo (${formatEuro(
+      personName: displayPerson,
+      reason: `Stessa persona (${displayPerson}) e stesso importo (${formatEuro(
         amountA
       )}) ${daysText}`,
     };
@@ -374,17 +490,20 @@ export function areTransactionsPotentialDuplicates(
 
 /**
  * Detects all groups of potential duplicate transactions across the ledger.
- * Groups movements that refer to the same person with the same amount within 7 days max.
+ * Groups movements that refer to the exact same person with the same amount within maxDaysWindow days.
  */
 export function detectDuplicateTransactions(
   transactions: CashTransaction[],
   members: Member[] = [],
   staff: StaffMember[] = [],
   maxDaysWindow: number = 7,
-  ignoredSignatures: string[] = []
+  ignoredSignatures: string[] = [],
+  mode: DuplicateDetectionMode = 'strict'
 ): DuplicateTransactionGroup[] {
+  if (mode === 'off') return [];
   if (!transactions || transactions.length < 2) return [];
 
+  const effectiveMaxDays = mode === 'same_day' ? 0 : maxDaysWindow;
   const ignoredSet = new Set(ignoredSignatures);
   const n = transactions.length;
   const visited = new Set<string>();
@@ -403,13 +522,12 @@ export function detectDuplicateTransactions(
       const candidateTx = transactions[j];
       if (visited.has(candidateTx.id)) continue;
 
-      // Check if candidateTx matches ANY transaction already in the cluster within 7 days of baseTx
       const check = areTransactionsPotentialDuplicates(
         baseTx,
         candidateTx,
         members,
         staff,
-        maxDaysWindow
+        effectiveMaxDays
       );
 
       if (check.isDuplicate) {
@@ -461,7 +579,7 @@ export function detectDuplicateTransactions(
         personName: detectedPerson || firstTx.description,
         matchReason:
           detectedReason ||
-          `Movimenti simili dello stesso importo (${formatEuro(amount)}) entro ${daysSpan} giorni`,
+          `Stessa persona e stesso importo (${formatEuro(amount)}) entro ${daysSpan} giorni`,
         amount,
         direction: isInc ? 'income' : 'expense',
         category: firstTx.category,

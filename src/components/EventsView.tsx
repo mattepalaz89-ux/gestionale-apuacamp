@@ -1066,6 +1066,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
   };
 
   const [isImportDrawerOpen, setIsImportDrawerOpen] = useState(false);
+  const [isBriefingExpanded, setIsBriefingExpanded] = useState(false);
 
   const syncEligible365 = isTessera365Eligible(syncIssueDate);
 
@@ -1399,166 +1400,177 @@ export const EventsView: React.FC<EventsViewProps> = ({
             </div>
           </div>
 
-          {/* SCHEDA BRIEFING PRE-EVENTO CON PULSANTI DIRETTI PER REGOLARIZZARE TESSERA/ANAGRAFICA */}
+          {/* COMPACT COLLAPSIBLE PRE-EVENT BRIEFING ACCORDION */}
           {currentBriefing && (
-            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                    <ShieldAlert className="w-4 h-4 text-emerald-600" />
-                    Briefing Sicurezza & Coordinamento Anagrafica/Tessere — {currentEvent.name}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsBriefingExpanded((prev) => !prev)}
+                className="w-full px-4 py-3 flex flex-wrap items-center justify-between gap-2 hover:bg-slate-50 transition-colors text-left"
+              >
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <ShieldAlert className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <h4 className="font-bold text-slate-900 text-xs sm:text-sm">
+                    Briefing Sicurezza & Tessere ({currentBriefing.totalConfirmed} iscritti)
                   </h4>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Clicca su qualsiasi partecipante qui sotto o nella tabella per aprire il{' '}
-                    <strong>Popup Dati Attuali</strong> e inserire/modificare direttamente Tessera e
-                    Anagrafica Soci senza riscrivere i dati.
-                  </p>
+                  {currentBriefing.missingOrExpiredCardList.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-bold">
+                      Tessere da sistemare: {currentBriefing.missingOrExpiredCardList.length}
+                    </span>
+                  )}
+                  {currentBriefing.allergiesList.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-bold">
+                      Allergie: {currentBriefing.allergiesList.length}
+                    </span>
+                  )}
+                  {currentBriefing.noPhotoConsentList.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-rose-50 text-rose-800 border border-rose-200 text-[10px] font-bold">
+                      Senza Foto: {currentBriefing.noPhotoConsentList.length}
+                    </span>
+                  )}
                 </div>
-                <span className="text-xs font-mono font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-md">
-                  {currentBriefing.totalConfirmed} iscritti analizzati
+                <span className="text-xs font-semibold text-slate-500">
+                  {isBriefingExpanded ? 'Nascondi dettagli ▴' : 'Mostra dettagli ▾'}
                 </span>
-              </div>
+              </button>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-                <div
-                  className={`p-3.5 rounded-xl border ${
-                    currentBriefing.missingOrExpiredCardList.length > 0
-                      ? 'bg-rose-50/60 border-rose-200'
-                      : 'bg-slate-50 border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
-                    <span className="flex items-center gap-1.5">
-                      <AlertTriangle
-                        className={`w-3.5 h-3.5 ${
-                          currentBriefing.missingOrExpiredCardList.length > 0
-                            ? 'text-rose-600'
-                            : 'text-emerald-600'
-                        }`}
-                      />
-                      Tessere Scadute / Assenti
-                    </span>
-                    <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
-                      {currentBriefing.missingOrExpiredCardList.length}
-                    </span>
+              {isBriefingExpanded && (
+                <div className="p-4 border-t border-slate-100 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs bg-slate-50/40">
+                  <div
+                    className={`p-3.5 rounded-xl border ${
+                      currentBriefing.missingOrExpiredCardList.length > 0
+                        ? 'bg-rose-50/60 border-rose-200'
+                        : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
+                      <span className="flex items-center gap-1.5">
+                        <AlertTriangle
+                          className={`w-3.5 h-3.5 ${
+                            currentBriefing.missingOrExpiredCardList.length > 0
+                              ? 'text-rose-600'
+                              : 'text-emerald-600'
+                          }`}
+                        />
+                        Tessere Scadute / Assenti
+                      </span>
+                      <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
+                        {currentBriefing.missingOrExpiredCardList.length}
+                      </span>
+                    </div>
+                    {currentBriefing.missingOrExpiredCardList.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">
+                        Tutti i partecipanti confermati hanno tessera valida.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1.5 text-[11px] text-rose-900">
+                        {currentBriefing.missingOrExpiredCardList.map((p) => {
+                          const targetBk = eventBookings.find((b) => b.id === p.bookingId);
+                          return (
+                            <li
+                              key={p.bookingId}
+                              className="leading-snug flex items-center justify-between gap-2 bg-white/80 p-1.5 rounded-lg border border-rose-200/80"
+                            >
+                              <div>
+                                <strong>{p.childName}</strong>: {p.cardDetails}
+                              </div>
+                              {targetBk && (
+                                <button
+                                  type="button"
+                                  onClick={() => openSyncMemberModalForBooking(targetBk)}
+                                  className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white font-semibold text-[10px] shrink-0"
+                                >
+                                  Inserisci Tessera
+                                </button>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
                   </div>
-                  {currentBriefing.missingOrExpiredCardList.length === 0 ? (
-                    <p className="text-[11px] text-slate-500">
-                      Tutti i partecipanti confermati hanno tessera o copertura valida.
-                    </p>
-                  ) : (
-                    <ul className="space-y-1.5 text-[11px] text-rose-900">
-                      {currentBriefing.missingOrExpiredCardList.map((p) => {
-                        const targetBk = eventBookings.find((b) => b.id === p.bookingId);
-                        return (
-                          <li
-                            key={p.bookingId}
-                            className="leading-snug flex items-center justify-between gap-2 bg-white/80 p-1.5 rounded-lg border border-rose-200/80"
-                          >
-                            <div>
-                              <strong>{p.childName}</strong>: {p.cardDetails}
-                            </div>
-                            {targetBk && (
-                              <button
-                                type="button"
-                                onClick={() => openSyncMemberModalForBooking(targetBk)}
-                                className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white font-semibold text-[10px] shrink-0"
-                                title="Apri popup con i dati attuali per inserire/rinnovare la tessera e sistemare l'Anagrafica Soci"
-                              >
-                                Inserisci Tessera
-                              </button>
-                            )}
+
+                  <div
+                    className={`p-3.5 rounded-xl border ${
+                      currentBriefing.allergiesList.length > 0
+                        ? 'bg-amber-50/70 border-amber-200'
+                        : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
+                      <span className="flex items-center gap-1.5">
+                        <HeartPulse className="w-3.5 h-3.5 text-rose-600" />
+                        Allergie & Farmaci
+                      </span>
+                      <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
+                        {currentBriefing.allergiesList.length}
+                      </span>
+                    </div>
+                    {currentBriefing.allergiesList.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">Nessuna allergia segnalata.</p>
+                    ) : (
+                      <ul className="space-y-1.5 text-[11px] text-amber-950">
+                        {currentBriefing.allergiesList.map((p) => (
+                          <li key={p.bookingId} className="leading-snug">
+                            <strong>{p.childName}</strong>: {p.allergies}
                           </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-
-                <div
-                  className={`p-3.5 rounded-xl border ${
-                    currentBriefing.allergiesList.length > 0
-                      ? 'bg-amber-50/70 border-amber-200'
-                      : 'bg-slate-50 border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
-                    <span className="flex items-center gap-1.5">
-                      <HeartPulse className="w-3.5 h-3.5 text-rose-600" />
-                      Allergie & Farmaci
-                    </span>
-                    <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
-                      {currentBriefing.allergiesList.length}
-                    </span>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                  {currentBriefing.allergiesList.length === 0 ? (
-                    <p className="text-[11px] text-slate-500">
-                      Nessuna allergia segnalata tra gli iscritti a questo evento.
-                    </p>
-                  ) : (
-                    <ul className="space-y-1.5 text-[11px] text-amber-950">
-                      {currentBriefing.allergiesList.map((p) => (
-                        <li key={p.bookingId} className="leading-snug">
-                          <strong>{p.childName}</strong>: {p.allergies}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
 
-                <div className="p-3.5 rounded-xl border bg-slate-50 border-slate-200">
-                  <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
-                    <span>Esigenze Speciali & Note</span>
-                    <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
-                      {currentBriefing.specialNeedsList.length}
-                    </span>
+                  <div className="p-3.5 rounded-xl border bg-white border-slate-200">
+                    <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
+                      <span>Esigenze Speciali & Note</span>
+                      <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
+                        {currentBriefing.specialNeedsList.length}
+                      </span>
+                    </div>
+                    {currentBriefing.specialNeedsList.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">Nessuna nota particolare.</p>
+                    ) : (
+                      <ul className="space-y-1.5 text-[11px] text-slate-700">
+                        {currentBriefing.specialNeedsList.map((p) => (
+                          <li key={p.bookingId} className="leading-snug">
+                            <strong>{p.childName}</strong>: {p.specialConditions}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                  {currentBriefing.specialNeedsList.length === 0 ? (
-                    <p className="text-[11px] text-slate-500">
-                      Nessuna esigenza speciale o nota particolare registrata.
-                    </p>
-                  ) : (
-                    <ul className="space-y-1.5 text-[11px] text-slate-700">
-                      {currentBriefing.specialNeedsList.map((p) => (
-                        <li key={p.bookingId} className="leading-snug">
-                          <strong>{p.childName}</strong>: {p.specialConditions}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
 
-                <div
-                  className={`p-3.5 rounded-xl border ${
-                    currentBriefing.noPhotoConsentList.length > 0
-                      ? 'bg-rose-50/60 border-rose-200'
-                      : 'bg-slate-50 border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
-                    <span className="flex items-center gap-1.5">
-                      <CameraOff className="w-3.5 h-3.5 text-rose-600" />
-                      Senza Consenso Foto
-                    </span>
-                    <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
-                      {currentBriefing.noPhotoConsentList.length}
-                    </span>
+                  <div
+                    className={`p-3.5 rounded-xl border ${
+                      currentBriefing.noPhotoConsentList.length > 0
+                        ? 'bg-rose-50/60 border-rose-200'
+                        : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-bold text-slate-900 mb-2">
+                      <span className="flex items-center gap-1.5">
+                        <CameraOff className="w-3.5 h-3.5 text-rose-600" />
+                        Senza Consenso Foto
+                      </span>
+                      <span className="font-mono px-1.5 py-0.5 rounded-full bg-white border border-slate-200 text-[11px]">
+                        {currentBriefing.noPhotoConsentList.length}
+                      </span>
+                    </div>
+                    {currentBriefing.noPhotoConsentList.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">
+                        Tutti hanno consenso foto attivo.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1.5 text-[11px] text-rose-900">
+                        {currentBriefing.noPhotoConsentList.map((p) => (
+                          <li key={p.bookingId} className="leading-snug">
+                            <strong>{p.childName}</strong> — NON fotografare
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                  {currentBriefing.noPhotoConsentList.length === 0 ? (
-                    <p className="text-[11px] text-slate-500">
-                      Tutti i partecipanti hanno autorizzazione foto/video attiva.
-                    </p>
-                  ) : (
-                    <ul className="space-y-1.5 text-[11px] text-rose-900">
-                      {currentBriefing.noPhotoConsentList.map((p) => (
-                        <li key={p.bookingId} className="leading-snug">
-                          <strong>{p.childName}</strong> — NON fotografare / coprire viso
-                        </li>
-                      ))}
-                    </ul>
-                  )}
                 </div>
-              </div>
+              )}
             </div>
           )}
 

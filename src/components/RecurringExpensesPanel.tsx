@@ -73,6 +73,7 @@ export const RecurringExpensesPanel: React.FC<RecurringExpensesPanelProps> = ({
   onRegisterOccurrencesInCashFlow,
 }) => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isPanelExpanded, setIsPanelExpanded] = useState(false);
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
 
   // Form states for creating a new recurring expense
@@ -211,23 +212,32 @@ export const RecurringExpensesPanel: React.FC<RecurringExpensesPanelProps> = ({
       id="cashflow-recurring-expenses-panel"
       className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden"
     >
-      {/* Header Bar */}
-      <div className="p-4 bg-slate-50/80 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-purple-100 text-purple-900 font-mono text-[10px] font-bold uppercase">
-              <Repeat className="w-3 h-3 text-purple-700" />
-              Spese Ricorrenti & Rateizzazioni
+      {/* Compact Accordion Header Bar */}
+      <div className="px-4 py-3 bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+        <button
+          id="btn-toggle-recurring-expenses-panel"
+          type="button"
+          onClick={() => setIsPanelExpanded((prev) => !prev)}
+          className="flex items-center gap-2.5 text-left min-w-0 flex-1"
+        >
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-purple-100 text-purple-900 font-mono text-[10px] font-bold uppercase shrink-0">
+            <Repeat className="w-3 h-3 text-purple-700" />
+            Spese Ricorrenti
+          </span>
+          <h3 className="font-bold text-slate-900 text-xs sm:text-sm truncate">
+            Piani di Spesa ({recurringExpenses.length})
+          </h3>
+          {totalAnnualCommitment > 0 && (
+            <span className="hidden md:inline-block text-xs text-slate-500 font-mono">
+              · Impegno {activeYear}: {formatEuro(totalAnnualCommitment)}
             </span>
-            <h3 className="font-bold text-slate-900 text-sm">
-              Piani di Spesa Mensili, Annuali o a Durata Determinata ({recurringExpenses.length})
-            </h3>
-          </div>
-          <p className="text-xs text-slate-500">
-            Imposta canoni mensili, spese annuali o pagamenti che durano un tot di tempo (es. 6
-            rate o fino a una data specifica) e registrali nel Libro Cassa con un clic.
-          </p>
-        </div>
+          )}
+          {isPanelExpanded ? (
+            <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+          )}
+        </button>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           {totalUnpaidCount > 0 && (
@@ -235,13 +245,12 @@ export const RecurringExpensesPanel: React.FC<RecurringExpensesPanelProps> = ({
               id="btn-register-all-recurring-year"
               type="button"
               onClick={handleRegisterAllAcrossAllPlans}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-purple-900 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-purple-900 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors"
               title="Registra nel Libro Cassa tutte le rate non ancora contabilizzate per l'anno attivo"
             >
               <Layers className="w-3.5 h-3.5 text-purple-700" />
               <span>
-                Contabilizza Rate Pendenti ({totalUnpaidCount} rate ·{' '}
-                {formatEuro(totalAnnualRemaining)})
+                Contabilizza ({totalUnpaidCount} · {formatEuro(totalAnnualRemaining)})
               </span>
             </button>
           )}
@@ -250,7 +259,7 @@ export const RecurringExpensesPanel: React.FC<RecurringExpensesPanelProps> = ({
             id="btn-open-new-recurring-expense"
             type="button"
             onClick={() => setIsAddModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-purple-700 hover:bg-purple-800 rounded-lg transition-colors shadow-2xs"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-purple-700 hover:bg-purple-800 rounded-lg transition-colors shadow-2xs"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Nuova Spesa Ricorrente</span>
@@ -258,24 +267,24 @@ export const RecurringExpensesPanel: React.FC<RecurringExpensesPanelProps> = ({
         </div>
       </div>
 
-      {/* Summary Strip & Plans List */}
-      {evaluatedPlans.length === 0 ? (
-        <div className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs bg-white">
-          <div className="text-slate-500">
-            Nessuna spesa ricorrente configurata (es. canone banca mensile, commercialista,
-            assicurazione/affitto annuale o rateizzazione attrezzature per N mesi).
+      {/* Expandable Summary Strip & Plans List */}
+      {isPanelExpanded && (
+        evaluatedPlans.length === 0 ? (
+          <div className="p-4 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs bg-white">
+            <div className="text-slate-500">
+              Nessuna spesa ricorrente configurata per l&apos;anno {activeYear}.
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsAddModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors shrink-0 self-start sm:self-auto"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Configura Spesa Ricorrente</span>
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors shrink-0 self-start sm:self-auto"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Configura Prima Spesa Ricorrente</span>
-          </button>
-        </div>
-      ) : (
-        <div className="p-4 space-y-4">
+        ) : (
+          <div className="p-4 border-t border-slate-200 space-y-4">
           {/* KPI Mini Bar */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-xs">
             <div>
@@ -475,6 +484,7 @@ export const RecurringExpensesPanel: React.FC<RecurringExpensesPanelProps> = ({
             })}
           </div>
         </div>
+        )
       )}
 
       {/* Modal for Adding a New Recurring Expense */}

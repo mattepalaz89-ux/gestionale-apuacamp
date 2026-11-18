@@ -27,13 +27,44 @@ const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
 SCOPES.forEach((scope) => provider.addScope(scope));
-provider.setCustomParameters({
-  prompt: 'consent',
-});
+
+const SESSION_TOKEN_KEY = 'apuacamp_google_oauth_token';
+const SESSION_EXPIRY_KEY = 'apuacamp_google_oauth_expiry';
+
+function loadSessionAccessToken(): string | null {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return null;
+    const token = window.sessionStorage.getItem(SESSION_TOKEN_KEY);
+    const expiry = Number(window.sessionStorage.getItem(SESSION_EXPIRY_KEY) || '0');
+    if (token && expiry > Date.now()) {
+      return token;
+    }
+    window.sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    window.sessionStorage.removeItem(SESSION_EXPIRY_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+  return null;
+}
+
+function saveSessionAccessToken(token: string | null) {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    if (token) {
+      // Google OAuth access tokens are valid for 3600s; keep for 52 minutes
+      window.sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+      window.sessionStorage.setItem(SESSION_EXPIRY_KEY, String(Date.now() + 52 * 60 * 1000));
+    } else {
+      window.sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      window.sessionStorage.removeItem(SESSION_EXPIRY_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
 
 let isSigningIn = false;
-// Cache the access token in memory ONLY (never in localStorage or sessionStorage).
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null = loadSessionAccessToken();
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -41,22 +72,32 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      const activeToken = cachedAccessToken || loadSessionAccessToken();
+      if (activeToken) {
+        cachedAccessToken = activeToken;
+        if (onAuthSuccess) onAuthSuccess(user, activeToken);
       } else if (!isSigningIn) {
         cachedAccessToken = null;
         if (onAuthFailure) onAuthFailure();
       }
     } else {
       cachedAccessToken = null;
+      saveSessionAccessToken(null);
       if (onAuthFailure) onAuthFailure();
     }
   });
 };
 
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+export const googleSignIn = async (
+  forceConsentPrompt: boolean = false
+): Promise<{ user: User; accessToken: string } | null> => {
   try {
     isSigningIn = true;
+    provider.setCustomParameters(
+      forceConsentPrompt
+        ? { prompt: 'consent select_account' }
+        : { prompt: 'select_account' }
+    );
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
@@ -64,6 +105,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
+    saveSessionAccessToken(cachedAccessToken);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     console.error('Sign in error:', error);
@@ -74,7 +116,13 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  if (cachedAccessToken) return cachedAccessToken;
+  const restored = loadSessionAccessToken();
+  if (restored) {
+    cachedAccessToken = restored;
+    return restored;
+  }
+  return null;
 };
 
 export const getCurrentUser = (): User | null => {
@@ -84,6 +132,7 @@ export const getCurrentUser = (): User | null => {
 export const logout = async () => {
   await auth.signOut();
   cachedAccessToken = null;
+  saveSessionAccessToken(null);
 };
 
 // ============================================================================

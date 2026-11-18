@@ -76,8 +76,15 @@ export default function App() {
   const [isPageGuideExpanded, setIsPageGuideExpanded] = useState<boolean>(false);
   const [isFullManualOpen, setIsFullManualOpen] = useState<boolean>(false);
   const [isDuplicatesModalOpen, setIsDuplicatesModalOpen] = useState<boolean>(false);
-  const [ignoredDuplicateSignatures, setIgnoredDuplicateSignatures] = useState<string[]>([]);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
+  const hasUnsavedPreLoginEditsRef = useRef<boolean>(false);
+
+  // Persisted ignored duplicate signatures and detection mode inside profile (so they are saved on Google Drive & Local File)
+  const ignoredDuplicateSignatures = useMemo(
+    () => appState.profile.ignoredDuplicateSignatures || [],
+    [appState.profile.ignoredDuplicateSignatures]
+  );
+  const duplicateDetectionMode = appState.profile.duplicateDetectionMode || 'strict';
 
   // Local PC File (.json for PC / OneDrive / Dropbox) state
   const [localFileName, setLocalFileName] = useState<string | null>(null);
@@ -91,6 +98,7 @@ export default function App() {
   const liveDriveFileIdRef = useRef<string | undefined>(undefined);
   const isHydratingFromDriveRef = useRef<boolean>(false);
   const lastSavedJsonRef = useRef<string>('');
+  const initialDefaultJsonRef = useRef<string>(exportBackupJSON(appState));
 
   // Receipt Modal State
   const [receiptModal, setReceiptModal] = useState<{
@@ -178,19 +186,26 @@ export default function App() {
   // When the connected Google profile changes, load the state scoped to that profile
   // and immediately sync with that Google account's Drive ("Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json")
   useEffect(() => {
-    const profileScopedState = loadAppState(googleUserEmail);
-    setAppState(profileScopedState);
-
     if (googleUserEmail) {
-      pullStateFromGoogleDrive(googleUserEmail);
+      // Only overwrite in-memory state before pulling from Drive if the user hasn't made edits while logged out
+      if (!hasUnsavedPreLoginEditsRef.current) {
+        const profileScopedState = loadAppState(googleUserEmail);
+        setAppState(profileScopedState);
+      }
+      pullStateFromGoogleDrive(googleUserEmail).then(() => {
+        hasUnsavedPreLoginEditsRef.current = false;
+      });
     }
   }, [googleUserEmail, pullStateFromGoogleDrive]);
 
-  // Auto-save in real time to connected Local PC File (if a file handle is active) and/or Google Drive when connected (zero browser localStorage)
+  // Auto-save in real time to connected Local PC File (if a file handle is active) and/or Google Drive when connected
   useEffect(() => {
     saveAppState(appState, googleUserEmail);
 
     const currentJson = exportBackupJSON(appState);
+    if (!googleUserEmail && currentJson !== initialDefaultJsonRef.current) {
+      hasUnsavedPreLoginEditsRef.current = true;
+    }
 
     // If a local PC file handle is connected via File System Access API, write to it automatically
     if (localFileHandleRef.current) {
@@ -322,9 +337,9 @@ export default function App() {
     );
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = async (forceConsent: boolean = false) => {
     try {
-      const res = await googleSignIn();
+      const res = await googleSignIn(Boolean(forceConsent));
       if (res?.user) {
         const email = res.user.email || res.user.displayName || 'Account Google Connesso';
         setGoogleUserEmail(email);
@@ -350,7 +365,7 @@ export default function App() {
     appState.initialFundCash
   );
 
-  // Detect potential duplicate movements (same person & same amount within 7 days max)
+  // Detect potential duplicate movements (same verified person & same amount within 7 days max, or 0 days in same_day mode)
   const duplicateGroups = useMemo(
     () =>
       detectDuplicateTransactions(
@@ -358,9 +373,16 @@ export default function App() {
         appState.members,
         appState.staff,
         7,
-        ignoredDuplicateSignatures
+        ignoredDuplicateSignatures,
+        duplicateDetectionMode
       ),
-    [appState.transactions, appState.members, appState.staff, ignoredDuplicateSignatures]
+    [
+      appState.transactions,
+      appState.members,
+      appState.staff,
+      ignoredDuplicateSignatures,
+      duplicateDetectionMode,
+    ]
   );
 
   const totalExtraDuplicatesCount = useMemo(
@@ -382,7 +404,8 @@ export default function App() {
     ignoredDuplicateSignatures,
     appState.profile.notificationResolutions,
     appState.profile.customDeadlines || [],
-    appState.profile.completedDeadlineIds || []
+    appState.profile.completedDeadlineIds || [],
+    duplicateDetectionMode
   );
 
   // --- Handlers for Cash Transactions & Funds ---
@@ -419,9 +442,13 @@ export default function App() {
 
   const handleLoadSampleDuplicates = () => {
     const sampleTxs = createSampleDuplicateTransactions(appState.profile.activeYear);
-    setIgnoredDuplicateSignatures([]);
     setAppState((prev) => ({
       ...prev,
+      profile: {
+        ...prev.profile,
+        ignoredDuplicateSignatures: [],
+        duplicateDetectionMode: 'strict',
+      },
       transactions: [...sampleTxs, ...prev.transactions],
     }));
   };
@@ -805,6 +832,14 @@ export default function App() {
         onUpdateProfile={handleUpdateProfile}
         isMobileOpen={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
+        googleUserEmail={googleUserEmail}
+        onGoogleSignIn={handleGoogleSignIn}
+        onGoogleLogout={handleGoogleLogout}
+        driveSyncState={driveSyncState}
+        lastDriveSavedAt={lastDriveSavedAt}
+        onReloadFromDrive={
+          googleUserEmail ? () => pullStateFromGoogleDrive(googleUserEmail) : undefined
+        }
       />
 
       {/* Main Content Area */}
@@ -926,6 +961,7 @@ export default function App() {
               onSaveLocalFile={handleSaveLocalFile}
               setActiveTab={setActiveTab}
               onUpdateProfile={handleUpdateProfile}
+              onUpdateAssembly={handleUpdateAssembly}
               onAddGrant={handleAddGrant}
               onSelectMemberForReceipt={openReceiptForMember}
             />
@@ -1145,14 +1181,38 @@ export default function App() {
         onClose={() => setIsDuplicatesModalOpen(false)}
         duplicateGroups={duplicateGroups}
         onDeleteTransactions={handleDeleteMultipleTransactions}
-        onIgnoreGroupSignature={(sig) =>
-          setIgnoredDuplicateSignatures((prev) =>
-            prev.includes(sig) ? prev : [...prev, sig]
-          )
-        }
+        onIgnoreGroupSignature={(sig) => {
+          const current = appState.profile.ignoredDuplicateSignatures || [];
+          if (!current.includes(sig)) {
+            handleUpdateProfile({
+              ...appState.profile,
+              ignoredDuplicateSignatures: [...current, sig],
+            });
+          }
+        }}
+        onIgnoreAllGroups={(sigs) => {
+          const current = new Set(appState.profile.ignoredDuplicateSignatures || []);
+          sigs.forEach((s) => current.add(s));
+          handleUpdateProfile({
+            ...appState.profile,
+            ignoredDuplicateSignatures: Array.from(current),
+          });
+        }}
         ignoredCount={ignoredDuplicateSignatures.length}
-        onResetIgnoredGroups={() => setIgnoredDuplicateSignatures([])}
+        onResetIgnoredGroups={() =>
+          handleUpdateProfile({
+            ...appState.profile,
+            ignoredDuplicateSignatures: [],
+          })
+        }
         onLoadSampleDuplicates={handleLoadSampleDuplicates}
+        duplicateDetectionMode={duplicateDetectionMode}
+        onChangeDuplicateDetectionMode={(mode) =>
+          handleUpdateProfile({
+            ...appState.profile,
+            duplicateDetectionMode: mode,
+          })
+        }
       />
 
       {/* Global Receipt & Estimate Modal */}

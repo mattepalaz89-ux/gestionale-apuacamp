@@ -1,14 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import {
-  Bell,
   AlertTriangle,
   Clock,
   CheckCircle2,
-  Mail,
   ShieldAlert,
   ArrowRight,
-  CameraOff,
-  HeartPulse,
   Send,
   Calendar,
   FileText,
@@ -18,6 +14,8 @@ import {
   Trash2,
   X,
   CalendarClock,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import {
   Member,
@@ -98,6 +96,11 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const [manualGrantPromoter, setManualGrantPromoter] = useState('Regione / Ente Erogatore');
   const [manualGrantAmount, setManualGrantAmount] = useState('5000');
 
+  // Accordion & Expandable Row states
+  const [expandedNotifId, setExpandedNotifId] = useState<string | null>(null);
+  const [isPreEventOpen, setIsPreEventOpen] = useState<boolean>(false);
+  const [isManualListOpen, setIsManualListOpen] = useState<boolean>(false);
+
   // Inline Resolve with Note or Postpone to Date state
   const [activeActionNotifId, setActiveActionNotifId] = useState<string | null>(null);
   const [activeActionMode, setActiveActionMode] = useState<'resolve' | 'postpone'>('resolve');
@@ -123,7 +126,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         ignoredDuplicateSignatures,
         undefined,
         profile.customDeadlines || [],
-        profile.completedDeadlineIds || []
+        profile.completedDeadlineIds || [],
+        profile.duplicateDetectionMode || 'strict'
       ),
     [
       members,
@@ -137,6 +141,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       ignoredDuplicateSignatures,
       profile.customDeadlines,
       profile.completedDeadlineIds,
+      profile.duplicateDetectionMode,
     ]
   );
 
@@ -344,250 +349,192 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   );
 
   return (
-    <div className="space-y-6">
-      {/* Manual Deadlines Action Strip & Summary */}
-      <div className="bg-white p-5 rounded-xl border border-emerald-200 shadow-2xs space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-emerald-100 text-emerald-900 font-mono text-[10px] font-bold uppercase">
-                <CalendarClock className="w-3 h-3 text-emerald-700" />
-                Scadenziario Personalizzato & Promemoria ASD
-              </span>
-              <span className="text-xs font-bold text-slate-700">
-                {(profile.customDeadlines || []).length} scadenze manuali salvate
-              </span>
-            </div>
-            <h3 className="font-extrabold text-slate-900 text-sm sm:text-base">
-              Inserisci Scadenze Manualmente (Nuovi Bandi, Dicembre 2027, Adempimenti o Altro)
-            </h3>
-            <p className="text-xs text-slate-600 max-w-3xl leading-relaxed">
-              Puoi registrare in qualsiasi momento una nuova scadenza manuale (ad esempio un{' '}
-              <strong>nuovo bando che scade a dicembre 2027</strong>, una convenzione, un rinnovo
-              o qualsiasi altro promemoria). Le scadenze inserite compaiono sia qui che nella{' '}
-              <strong>barra di avanzamento temporale in Dashboard</strong>.
-            </p>
-          </div>
-
-          <button
-            id="btn-notifications-add-manual-deadline"
-            type="button"
-            onClick={openCreateManualDeadline}
-            className="flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl transition-colors shadow-2xs shrink-0 self-start lg:self-auto"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Inserisci Scadenza Manuale (Bando o Altro)</span>
-          </button>
-        </div>
-
-        {(profile.customDeadlines || []).length > 0 && (
-          <div className="pt-3 border-t border-slate-100 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {(profile.customDeadlines || []).map((c) => {
-              const parsed = parseAnyDate(c.dueDate);
-              const dLeft = parsed ? diffDays(parsed, new Date()) : 0;
-              return (
-                <div
-                  key={c.id}
-                  className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start justify-between gap-2 text-xs"
-                >
-                  <div className="space-y-0.5 min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 font-mono text-[10px] font-bold">
-                        {c.dueDate}
-                      </span>
-                      <span className="text-[10px] font-mono font-semibold text-slate-500">
-                        ({dLeft < 0 ? `Scaduta da ${Math.abs(dLeft)} gg` : `Tra ${dLeft} gg`})
-                      </span>
-                    </div>
-                    <div className="font-bold text-slate-900 truncate">{c.title}</div>
-                    <div className="text-[11px] text-slate-500 line-clamp-1">
-                      {c.description}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => openEditManualDeadline(c.id)}
-                      className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-emerald-700 hover:border-emerald-300"
-                      title="Modifica scadenza manuale"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteManualDeadline(c.id)}
-                      className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-rose-600 hover:border-rose-300"
-                      title="Elimina scadenza manuale"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Top KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
+    <div className="space-y-4">
+      {/* Compact Top KPIs */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div className="bg-white p-4 rounded-xl border border-slate-200">
           <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-            <span>Alert Pre-Evento & Sicurezza</span>
+            <span>Alert Pre-Evento</span>
             <ShieldAlert className="w-4 h-4 text-rose-600" />
           </div>
-          <div className="text-2xl font-extrabold text-rose-800 font-mono mt-2 tabular-nums">
+          <div className="text-2xl font-extrabold text-rose-700 font-mono mt-1 tabular-nums">
             {preEventAlertsCount}
           </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Tessere mancanti, allergie e consensi foto
-          </div>
         </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
+        <div className="bg-white p-4 rounded-xl border border-slate-200">
           <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-            <span>Email Conferma Non Inviate</span>
+            <span>Email da Inviare</span>
             <Send className="w-4 h-4 text-amber-600" />
           </div>
-          <div className="text-2xl font-extrabold text-amber-800 font-mono mt-2 tabular-nums">
+          <div className="text-2xl font-extrabold text-amber-700 font-mono mt-1 tabular-nums">
             {unsentEmailsCount}
           </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Da inviare per tessere, eventi o gadget
-          </div>
         </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
+        <div className="bg-white p-4 rounded-xl border border-slate-200">
           <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-            <span>Scadenze Governance & Bandi</span>
+            <span>Governance &amp; Bandi</span>
             <FileText className="w-4 h-4 text-purple-600" />
           </div>
-          <div className="text-2xl font-extrabold text-purple-900 font-mono mt-2 tabular-nums">
+          <div className="text-2xl font-extrabold text-purple-800 font-mono mt-1 tabular-nums">
             {governanceAlertsCount + grantsAlertsCount}
-          </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Assemblea, Safeguarding, Bandi e Rendicontazioni
           </div>
         </div>
 
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
+        <div className="bg-white p-4 rounded-xl border border-slate-200">
           <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-            <span>Saldi Eventi da Incassare</span>
+            <span>Saldi da Incassare</span>
             <Clock className="w-4 h-4 text-emerald-600" />
           </div>
-          <div className="text-2xl font-extrabold text-slate-900 font-mono mt-2 tabular-nums">
+          <div className="text-2xl font-extrabold text-slate-900 font-mono mt-1 tabular-nums">
             {formatEuro(totalUnpaidBookingsAmount)}
-          </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Da {unpaidBookings.length} partecipanti confermati
           </div>
         </div>
       </div>
 
-      {/* Interactive Pre-Event Briefing Overview */}
-      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-emerald-600" />
-              Monitoraggio Pre-Evento (Controllo Tessere, Allergie, Esigenze Speciali e Foto)
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Riepilogo automatico per ogni evento in programma: segnala chi partecipa senza
-              tessera o con tessera in scadenza, allergie, bisogni speciali e divieto foto.
-            </p>
+      {/* Collapsible Secondary Strips: 1) Scadenze Manuali | 2) Monitoraggio Pre-Evento */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+        {/* Accordion 1: Scadenze Manuali */}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-3 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setIsManualListOpen((prev) => !prev)}
+              className="flex items-center gap-2 text-xs font-bold text-slate-900 hover:text-emerald-800 text-left flex-1"
+            >
+              {isManualListOpen ? (
+                <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+              )}
+              <CalendarClock className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>Scadenze Manuali ({(profile.customDeadlines || []).length})</span>
+            </button>
+            <button
+              id="btn-notifications-add-manual-deadline"
+              type="button"
+              onClick={openCreateManualDeadline}
+              className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition-colors shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Nuova Scadenza</span>
+            </button>
           </div>
-          <button
-            onClick={() => onNavigateTab('events')}
-            className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 self-start sm:self-auto"
-          >
-            <span>Gestisci Eventi & Iscritti</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+
+          {isManualListOpen && (
+            <div className="px-4 pb-3 pt-1 border-t border-slate-100 divide-y divide-slate-100">
+              {(profile.customDeadlines || []).length === 0 ? (
+                <div className="py-4 text-center text-xs text-slate-400">
+                  Nessuna scadenza manuale salvata.
+                </div>
+              ) : (
+                (profile.customDeadlines || []).map((c) => {
+                  const parsed = parseAnyDate(c.dueDate);
+                  const dLeft = parsed ? diffDays(parsed, new Date()) : 0;
+                  return (
+                    <div
+                      key={c.id}
+                      className="py-2 flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900 truncate">{c.title}</div>
+                        <div className="text-[11px] font-mono text-slate-500">
+                          {c.dueDate} ·{' '}
+                          {dLeft < 0 ? `Scaduta da ${Math.abs(dLeft)} gg` : `Tra ${dLeft} gg`}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openEditManualDeadline(c.id)}
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-slate-100"
+                          title="Modifica"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteManualDeadline(c.id)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                          title="Elimina"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {eventBriefings.map((b) => {
-            const hasAlerts =
-              b.missingOrExpiredCardList.length > 0 ||
-              b.allergiesList.length > 0 ||
-              b.noPhotoConsentList.length > 0 ||
-              b.specialNeedsList.length > 0;
+        {/* Accordion 2: Monitoraggio Pre-Evento */}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-3 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setIsPreEventOpen((prev) => !prev)}
+              className="flex items-center gap-2 text-xs font-bold text-slate-900 hover:text-emerald-800 text-left flex-1"
+            >
+              {isPreEventOpen ? (
+                <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+              )}
+              <Calendar className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>Briefing Sicurezza Pre-Evento ({eventBriefings.length} eventi)</span>
+            </button>
+            <button
+              onClick={() => onNavigateTab('events')}
+              className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 flex items-center gap-1 shrink-0"
+            >
+              <span>Eventi</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
-            return (
-              <div
-                key={b.event.id}
-                className={`p-4 rounded-xl border text-xs space-y-2.5 ${
-                  hasAlerts
-                    ? 'bg-amber-50/40 border-amber-200'
-                    : 'bg-slate-50 border-slate-200'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-bold text-slate-900">{b.event.name}</div>
-                    <div className="text-[11px] font-mono text-slate-500">
-                      Data: {b.event.date} · {b.totalConfirmed} iscritti
-                    </div>
+          {isPreEventOpen && (
+            <div className="px-4 pb-3 pt-1 border-t border-slate-100 divide-y divide-slate-100">
+              {eventBriefings.map((b) => (
+                <div
+                  key={b.event.id}
+                  onClick={() => onNavigateTab('events')}
+                  className="py-2 flex items-center justify-between gap-2 text-xs hover:bg-slate-50 cursor-pointer"
+                >
+                  <div className="min-w-0">
+                    <span className="font-semibold text-slate-900">{b.event.name}</span>
+                    <span className="text-[11px] font-mono text-slate-400 ml-2">
+                      {b.event.date} · {b.totalConfirmed} iscritti
+                    </span>
                   </div>
-                  <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-white border border-slate-200 font-semibold text-slate-700">
-                    {b.daysUntilEvent >= 0 ? `Tra ${b.daysUntilEvent} gg` : 'Passato'}
-                  </span>
+                  <div className="flex items-center gap-2 text-[11px] font-mono shrink-0">
+                    {b.missingOrExpiredCardList.length > 0 && (
+                      <span className="text-rose-600 font-bold" title="Tessere assenti/scadute">
+                        {b.missingOrExpiredCardList.length} tess.
+                      </span>
+                    )}
+                    {b.allergiesList.length > 0 && (
+                      <span className="text-amber-700 font-bold" title="Allergie segnalate">
+                        {b.allergiesList.length} allerg.
+                      </span>
+                    )}
+                    {b.noPhotoConsentList.length > 0 && (
+                      <span className="text-slate-600" title="Senza consenso foto">
+                        {b.noPhotoConsentList.length} no-foto
+                      </span>
+                    )}
+                    {b.pendingEmailsList.length > 0 && (
+                      <span className="text-blue-600" title="Email da inviare">
+                        {b.pendingEmailsList.length} mail
+                      </span>
+                    )}
+                  </div>
                 </div>
-
-                {b.totalConfirmed === 0 ? (
-                  <p className="text-[11px] text-slate-400 italic">
-                    Nessun partecipante ancora registrato per questo evento.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5 text-[11px]">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-600 flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3 text-rose-600" />
-                        Tessere assenti/scadute:
-                      </span>
-                      <span
-                        className={`font-mono font-bold ${
-                          b.missingOrExpiredCardList.length > 0
-                            ? 'text-rose-700'
-                            : 'text-emerald-700'
-                        }`}
-                      >
-                        {b.missingOrExpiredCardList.length}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-600 flex items-center gap-1">
-                        <HeartPulse className="w-3 h-3 text-amber-600" />
-                        Allergie segnalate:
-                      </span>
-                      <span className="font-mono font-bold text-slate-800">
-                        {b.allergiesList.length}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-600 flex items-center gap-1">
-                        <CameraOff className="w-3 h-3 text-rose-600" />
-                        Senza consenso foto:
-                      </span>
-                      <span className="font-mono font-bold text-slate-800">
-                        {b.noPhotoConsentList.length}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-600 flex items-center gap-1">
-                        <Mail className="w-3 h-3 text-blue-600" />
-                        Email conferma da inviare:
-                      </span>
-                      <span className="font-mono font-bold text-slate-800">
-                        {b.pendingEmailsList.length}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -701,49 +648,65 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
               const isUrgent = notif.type === 'urgent';
               const isWarning = notif.type === 'warning';
               const isEditingThis = activeActionNotifId === notif.id;
+              const isExpanded = expandedNotifId === notif.id || isEditingThis;
 
               return (
                 <div
                   key={notif.id}
-                  className="p-4 sm:p-5 flex flex-col gap-3 hover:bg-slate-50/60 transition-colors"
+                  className="transition-colors"
                 >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="flex items-start gap-3.5">
-                      <div
-                        className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                  {/* 1-Line Compact Notification Header Row */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() =>
+                      setExpandedNotifId((prev) => (prev === notif.id ? null : notif.id))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setExpandedNotifId((prev) => (prev === notif.id ? null : notif.id));
+                      }
+                    }}
+                    className="px-4 py-3 flex items-center justify-between gap-3 hover:bg-slate-50 cursor-pointer select-none"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 ${
                           isUrgent
-                            ? 'bg-rose-100 text-rose-700'
+                            ? 'bg-rose-600'
                             : isWarning
-                            ? 'bg-amber-100 text-amber-700'
-                            : 'bg-blue-100 text-blue-700'
+                            ? 'bg-amber-500'
+                            : 'bg-blue-500'
                         }`}
-                      >
-                        {isUrgent ? (
-                          <AlertTriangle className="w-4 h-4" />
-                        ) : isWarning ? (
-                          <Clock className="w-4 h-4" />
-                        ) : (
-                          <Bell className="w-4 h-4" />
-                        )}
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h4 className="font-bold text-slate-900 text-xs sm:text-sm">
-                            {notif.title}
-                          </h4>
-                          <span className="text-[10px] text-slate-400 font-mono">
-                            · {notif.date}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-600 mt-1 max-w-2xl leading-relaxed">
-                          {notif.description}
-                        </p>
-                      </div>
+                      />
+                      <h4 className="font-semibold text-slate-900 text-xs sm:text-sm truncate">
+                        {notif.title}
+                      </h4>
                     </div>
 
-                    {/* Direct Action + Resolve / Postpone Buttons */}
-                    <div className="shrink-0 flex flex-wrap items-center gap-2 self-end sm:self-auto">
+                    <div className="flex items-center gap-2.5 shrink-0 text-xs">
+                      <span className="text-[11px] text-slate-500 font-mono tabular-nums">
+                        {notif.date}
+                      </span>
+                      {isExpanded ? (
+                        <ChevronDown className="w-4 h-4 text-slate-400" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-slate-400" />
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Expanded Details & Action Buttons (Visible on click) */}
+                  {isExpanded && (
+                    <div className="px-4 pb-4 pt-1 bg-slate-50/70 border-t border-slate-100 space-y-3 text-xs">
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        {notif.description}
+                      </p>
+
+                      {/* Direct Action + Resolve / Postpone Buttons */}
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                       <button
                         id={`btn-notif-resolve-${notif.id}`}
                         type="button"
@@ -1000,6 +963,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                           </div>
                         </div>
                       )}
+                    </div>
+                  )}
                     </div>
                   )}
                 </div>
