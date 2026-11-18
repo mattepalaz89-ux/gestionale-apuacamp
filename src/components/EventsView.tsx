@@ -1067,11 +1067,13 @@ export const EventsView: React.FC<EventsViewProps> = ({
 
   const [isImportDrawerOpen, setIsImportDrawerOpen] = useState(false);
   const [isBriefingExpanded, setIsBriefingExpanded] = useState(false);
+  const [isConditionsExpanded, setIsConditionsExpanded] = useState(false);
+  const [expandedBookingId, setExpandedBookingId] = useState<string | null>(null);
 
   const syncEligible365 = isTessera365Eligible(syncIssueDate);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Event Selection Tabs + New Event Button */}
       <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between gap-2 overflow-x-auto">
         <div className="flex items-center gap-1.5 min-w-max">
@@ -1141,10 +1143,6 @@ export const EventsView: React.FC<EventsViewProps> = ({
       {!currentEvent ? (
         <div className="bg-white p-12 rounded-xl border border-slate-200 text-center space-y-3">
           <div className="text-base font-bold text-slate-800">Nessun evento selezionato</div>
-          <p className="text-xs text-slate-500 max-w-md mx-auto">
-            Puoi creare nuovi eventi personalizzando condizioni di partecipazione, fasce d&apos;età,
-            quote soci/non-soci e caparre.
-          </p>
           <button
             onClick={openCreateEventModal}
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg"
@@ -1155,11 +1153,11 @@ export const EventsView: React.FC<EventsViewProps> = ({
         </div>
       ) : (
         <>
-          {/* Event Hero Card & Streamlined Action Toolbar (Soluzione 5) */}
-          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-2xs">
-            <div className="flex flex-col gap-4 pb-5 border-b border-slate-100">
+          {/* Event Hero Card & Streamlined Action Toolbar */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
+            <div className="flex flex-col gap-3 pb-4 border-b border-slate-100">
               <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
-                <div className="space-y-1.5 min-w-0">
+                <div className="space-y-1 min-w-0">
                   <div className="flex items-center gap-2 text-xs font-medium text-emerald-700 flex-wrap">
                     <span className="uppercase tracking-wider font-semibold text-[10px] px-2 py-0.5 rounded-sm bg-emerald-50 border border-emerald-200">
                       {currentEvent.category.replace('_', ' ')}
@@ -1171,13 +1169,13 @@ export const EventsView: React.FC<EventsViewProps> = ({
                     {currentEvent.ageGroups && (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-800 border border-blue-200">
                         <Users className="w-3 h-3" />
-                        Fasce d&apos;Età: {currentEvent.ageGroups}
+                        {currentEvent.ageGroups}
                       </span>
                     )}
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-xl font-bold text-slate-900 tracking-tight">
+                    <h3 className="text-lg font-bold text-slate-900 tracking-tight">
                       {currentEvent.name}
                     </h3>
                     <button
@@ -1233,9 +1231,6 @@ export const EventsView: React.FC<EventsViewProps> = ({
                   id="events-import-drawer-panel"
                   className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs animate-in fade-in duration-150"
                 >
-                  <div className="text-slate-600 font-medium">
-                    Strumenti Modulo Google, importazione Excel e salvataggio foglio evento su Drive:
-                  </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => downloadEmptyExcelTemplate('eventi')}
@@ -1304,40 +1299,50 @@ export const EventsView: React.FC<EventsViewProps> = ({
                 </div>
               )}
 
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-600">
-                <span className="flex items-center gap-1">
-                  <MapPin className="w-3.5 h-3.5 text-slate-400" />
-                  {currentEvent.location}
-                </span>
-                <span>·</span>
-                <span className="font-mono text-slate-800 font-semibold">
-                  Quota Soci: {formatEuro(currentEvent.memberPrice)} / Non soci:{' '}
-                  {formatEuro(currentEvent.nonMemberPrice)}
-                </span>
-                {currentEvent.depositDefault !== undefined && (
-                  <>
-                    <span>·</span>
-                    <span className="font-mono text-emerald-800 font-medium">
-                      Caparra standard: {formatEuro(currentEvent.depositDefault)}
-                    </span>
-                  </>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span className="flex items-center gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                    {currentEvent.location}
+                  </span>
+                  <span>·</span>
+                  <span className="font-mono text-slate-800 font-semibold">
+                    Soci: {formatEuro(currentEvent.memberPrice)} / Non soci:{' '}
+                    {formatEuro(currentEvent.nonMemberPrice)}
+                  </span>
+                  {currentEvent.depositDefault !== undefined && (
+                    <>
+                      <span>·</span>
+                      <span className="font-mono text-emerald-800 font-medium">
+                        Caparra: {formatEuro(currentEvent.depositDefault)}
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                {(currentEvent.conditions || currentEvent.notes) && (
+                  <button
+                    type="button"
+                    onClick={() => setIsConditionsExpanded((prev) => !prev)}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                  >
+                    <Info className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Condizioni & Note {isConditionsExpanded ? '▴' : '▾'}</span>
+                  </button>
                 )}
               </div>
 
-              {(currentEvent.conditions || currentEvent.notes) && (
-                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 flex items-start gap-2.5">
-                  <Info className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                  <div className="space-y-0.5">
-                    {currentEvent.conditions && (
-                      <div>
-                        <strong className="text-slate-900">Condizioni & Requisiti:</strong>{' '}
-                        {currentEvent.conditions}
-                      </div>
-                    )}
-                    {currentEvent.notes && (
-                      <div className="text-slate-500">{currentEvent.notes}</div>
-                    )}
-                  </div>
+              {isConditionsExpanded && (currentEvent.conditions || currentEvent.notes) && (
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-0.5">
+                  {currentEvent.conditions && (
+                    <div>
+                      <strong className="text-slate-900">Condizioni & Requisiti:</strong>{' '}
+                      {currentEvent.conditions}
+                    </div>
+                  )}
+                  {currentEvent.notes && (
+                    <div className="text-slate-500">{currentEvent.notes}</div>
+                  )}
                 </div>
               )}
             </div>
@@ -1625,61 +1630,85 @@ export const EventsView: React.FC<EventsViewProps> = ({
                       );
                       const isEmailSent = !!bk.confirmationEmailSent;
 
+                      const isRowExpanded = expandedBookingId === bk.id;
+                      const hasExtraDetails = Boolean(
+                        bk.notes ||
+                          bk.parentEmail ||
+                          bk.parentPhone ||
+                          (bk.discountAmount && bk.discountAmount > 0) ||
+                          (bk.voucherApplied && bk.voucherApplied > 0)
+                      );
+
                       return (
                         <tr key={bk.id} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="py-2.5 px-4">
+                          <td
+                            className="py-2.5 px-4 cursor-pointer select-none"
+                            onClick={() =>
+                              setExpandedBookingId((prev) => (prev === bk.id ? null : bk.id))
+                            }
+                            title="Clicca per mostrare o nascondere note, contatti e sconti"
+                          >
                             <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
                               <span>{bk.childName}</span>
-                              {member ? (
-                                <span
-                                  className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-semibold"
-                                  title="Socio collegato all'Anagrafica Soci"
-                                >
-                                  In Anagrafica
-                                </span>
-                              ) : (
+                              {!member && (
                                 <span
                                   className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 text-[9px] font-semibold"
                                   title="Non ancora presente in Anagrafica Soci: clicca sul pulsante Tessera per inserirlo automaticamente"
                                 >
-                                  Non in Anagrafica
+                                  Nuovo
+                                </span>
+                              )}
+                              {hasExtraDetails && (
+                                <span className="text-[10px] text-slate-400 font-normal">
+                                  {isRowExpanded ? '▴' : '▾'}
                                 </span>
                               )}
                             </div>
-                            {((bk.discountAmount && bk.discountAmount > 0) ||
-                              (bk.voucherApplied && bk.voucherApplied > 0)) && (
-                              <div className="flex flex-wrap items-center gap-1 mt-1">
-                                {bk.discountAmount && bk.discountAmount > 0 ? (
-                                  <span
-                                    onClick={() => openDiscountBookingModal(bk)}
-                                    className="cursor-pointer inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 text-[9px] font-bold hover:bg-indigo-100"
-                                    title="Clicca per modificare lo sconto o la dicitura per questo evento"
-                                  >
-                                    <Tag className="w-2.5 h-2.5 text-indigo-600" />
-                                    Sconto -{formatEuro(bk.discountAmount)}
-                                    {bk.discountLabel ? ` (${bk.discountLabel})` : ''}
-                                  </span>
-                                ) : null}
-                                {bk.voucherApplied && bk.voucherApplied > 0 ? (
-                                  <span
-                                    onClick={() => openDiscountBookingModal(bk)}
-                                    className="cursor-pointer inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-50 text-violet-800 border border-violet-200 text-[9px] font-bold hover:bg-violet-100"
-                                    title="Clicca per modificare il buono applicato"
-                                  >
-                                    <Ticket className="w-2.5 h-2.5 text-violet-600" />
-                                    Buono -{formatEuro(bk.voucherApplied)}
-                                  </span>
-                                ) : null}
+
+                            {isRowExpanded && (
+                              <div className="mt-1.5 space-y-1 text-[11px] text-slate-600">
+                                {((bk.discountAmount && bk.discountAmount > 0) ||
+                                  (bk.voucherApplied && bk.voucherApplied > 0)) && (
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {bk.discountAmount && bk.discountAmount > 0 ? (
+                                      <span
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openDiscountBookingModal(bk);
+                                        }}
+                                        className="cursor-pointer inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 text-[9px] font-bold hover:bg-indigo-100"
+                                      >
+                                        <Tag className="w-2.5 h-2.5 text-indigo-600" />
+                                        Sconto -{formatEuro(bk.discountAmount)}
+                                        {bk.discountLabel ? ` (${bk.discountLabel})` : ''}
+                                      </span>
+                                    ) : null}
+                                    {bk.voucherApplied && bk.voucherApplied > 0 ? (
+                                      <span
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openDiscountBookingModal(bk);
+                                        }}
+                                        className="cursor-pointer inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-50 text-violet-800 border border-violet-200 text-[9px] font-bold hover:bg-violet-100"
+                                      >
+                                        <Ticket className="w-2.5 h-2.5 text-violet-600" />
+                                        Buono -{formatEuro(bk.voucherApplied)}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                )}
+                                {bk.notes && (
+                                  <div className="text-[10px] text-slate-500">{bk.notes}</div>
+                                )}
                               </div>
-                            )}
-                            {bk.notes && (
-                              <div className="text-[10px] text-slate-500 mt-0.5">{bk.notes}</div>
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-slate-700">
-                            <div>{bk.parentName || '-'}</div>
-                            {bk.parentEmail && (
-                              <div className="text-[10px] text-slate-400">{bk.parentEmail}</div>
+                            <div className="truncate max-w-[160px]">{bk.parentName || '-'}</div>
+                            {isRowExpanded && (bk.parentEmail || bk.parentPhone) && (
+                              <div className="text-[10px] text-slate-400 mt-0.5">
+                                {bk.parentEmail} {bk.parentPhone ? `· ${bk.parentPhone}` : ''}
+                              </div>
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-center">

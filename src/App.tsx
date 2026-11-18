@@ -25,6 +25,7 @@ import {
   archiveFiscalYearState,
   exportBackupJSON,
   parseBackupJSON,
+  countAppStateRecords,
   AppState,
 } from './utils/storage';
 import {
@@ -53,7 +54,7 @@ import { exportAccountingToExcel } from './utils/export';
 import { calculateCashTotals, formatEuro } from './utils/finance';
 import { generateSystemNotifications } from './utils/notifications';
 import {
-  detectDuplicateTransactions,
+  detectDuplicatesForNewTransactions,
   createSampleDuplicateTransactions,
 } from './utils/duplicates';
 import {
@@ -66,6 +67,7 @@ import {
   logout,
   loadLiveDatabaseFromDrive,
   saveLiveDatabaseToDrive,
+  ensureGestionaleDriveStructure,
 } from './services/googleWorkspace';
 
 export default function App() {
@@ -77,7 +79,12 @@ export default function App() {
   const [isFullManualOpen, setIsFullManualOpen] = useState<boolean>(false);
   const [isDuplicatesModalOpen, setIsDuplicatesModalOpen] = useState<boolean>(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
+  const [driveAuthExpiredNotice, setDriveAuthExpiredNotice] = useState<boolean>(false);
+  // IDs of transactions to check for duplicates (empty on normal app startup; populated only on initial import or when a new movement is added)
+  const [targetDuplicateTxIds, setTargetDuplicateTxIds] = useState<string[]>([]);
   const hasUnsavedPreLoginEditsRef = useRef<boolean>(false);
+  const appStateRef = useRef<AppState>(appState);
+  appStateRef.current = appState;
 
   // Persisted ignored duplicate signatures and detection mode inside profile (so they are saved on Google Drive & Local File)
   const ignoredDuplicateSignatures = useMemo(
@@ -120,19 +127,65 @@ export default function App() {
     member: null,
   });
 
+  // Push current state to Google Drive immediately
+  const pushStateToGoogleDriveNow = useCallback(async (stateToPush: AppState, email: string) => {
+    const jsonStr = exportBackupJSON(stateToPush);
+    setDriveSyncState('saving');
+    try {
+      const uploaded = await saveLiveDatabaseToDrive(jsonStr, liveDriveFileIdRef.current);
+      liveDriveFileIdRef.current = uploaded.id;
+      lastSavedJsonRef.current = jsonStr;
+      saveAppState(stateToPush, email);
+      setDriveAuthExpiredNotice(false);
+      setLastDriveSavedAt(
+        new Date().toLocaleTimeString('it-IT', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      );
+      setDriveSyncState('saved');
+    } catch (err: any) {
+      if (err?.message === 'AUTH_REQUIRED') {
+        setDriveAuthExpiredNotice(true);
+      }
+      console.warn('Google Drive save notice:', err);
+      setDriveSyncState('error');
+    }
+  }, []);
+
   // Pull latest state from the connected account's Google Drive ("database_gestionale_asd.json")
   const pullStateFromGoogleDrive = useCallback(async (email: string) => {
     setDriveSyncState('loading');
     try {
+      // Ensure the "Gestionale ASD" folder structure exists on Drive
+      ensureGestionaleDriveStructure().catch(() => {});
+
+      const localCurrent = appStateRef.current;
+      const localCount = countAppStateRecords(localCurrent);
+
       const remoteDb = await loadLiveDatabaseFromDrive();
       if (remoteDb && remoteDb.content) {
         const parsed = parseBackupJSON(remoteDb.content);
         if (parsed) {
-          isHydratingFromDriveRef.current = true;
+          const remoteCount = countAppStateRecords(parsed);
           liveDriveFileIdRef.current = remoteDb.fileId || undefined;
+
+          // Safety Protection: Never overwrite non-empty local data with an empty remote DB file,
+          // and preserve pre-login edits if the user just imported data before connecting Drive
+          if (
+            (remoteCount === 0 && localCount > 0) ||
+            (hasUnsavedPreLoginEditsRef.current && localCount > remoteCount)
+          ) {
+            await pushStateToGoogleDriveNow(localCurrent, email);
+            return;
+          }
+
+          isHydratingFromDriveRef.current = true;
           lastSavedJsonRef.current = exportBackupJSON(parsed);
           setAppState(parsed);
           saveAppState(parsed, email);
+          setDriveAuthExpiredNotice(false);
           const timeStr = remoteDb.modifiedTime
             ? new Date(remoteDb.modifiedTime).toLocaleTimeString('it-IT', {
                 hour: '2-digit',
@@ -150,21 +203,25 @@ export default function App() {
           return;
         }
       }
-      // If no live DB file exists yet on this Drive, create it immediately from current state
-      const currentScoped = loadAppState(email);
-      const jsonStr = exportBackupJSON(currentScoped);
-      const uploaded = await saveLiveDatabaseToDrive(jsonStr);
-      liveDriveFileIdRef.current = uploaded.id;
-      lastSavedJsonRef.current = jsonStr;
-      setLastDriveSavedAt(
-        new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
-      );
-      setDriveSyncState('saved');
-    } catch (err) {
+
+      // If no live DB file exists yet on this Drive, create it immediately from the current in-memory state (or cached profile state if richer)
+      const cachedScoped = loadAppState(email);
+      const stateToUpload =
+        countAppStateRecords(localCurrent) >= countAppStateRecords(cachedScoped)
+          ? localCurrent
+          : cachedScoped;
+      if (stateToUpload !== localCurrent) {
+        setAppState(stateToUpload);
+      }
+      await pushStateToGoogleDriveNow(stateToUpload, email);
+    } catch (err: any) {
+      if (err?.message === 'AUTH_REQUIRED') {
+        setDriveAuthExpiredNotice(true);
+      }
       console.warn('Background Drive sync notice:', err);
-      setDriveSyncState('idle');
+      setDriveSyncState('error');
     }
-  }, []);
+  }, [pushStateToGoogleDriveNow]);
 
   // Initialize Google Workspace Auth listener
   useEffect(() => {
@@ -172,6 +229,7 @@ export default function App() {
       (user) => {
         const email = user.email || user.displayName || 'Account Google Connesso';
         setGoogleUserEmail(email);
+        setDriveAuthExpiredNotice(false);
       },
       () => {
         setGoogleUserEmail(null);
@@ -183,14 +241,14 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // When the connected Google profile changes, load the state scoped to that profile
-  // and immediately sync with that Google account's Drive ("Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json")
+  // When the connected Google profile changes, sync with that Google account's Drive ("Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json")
   useEffect(() => {
     if (googleUserEmail) {
-      // Only overwrite in-memory state before pulling from Drive if the user hasn't made edits while logged out
       if (!hasUnsavedPreLoginEditsRef.current) {
         const profileScopedState = loadAppState(googleUserEmail);
-        setAppState(profileScopedState);
+        if (countAppStateRecords(profileScopedState) > countAppStateRecords(appStateRef.current)) {
+          setAppState(profileScopedState);
+        }
       }
       pullStateFromGoogleDrive(googleUserEmail).then(() => {
         hasUnsavedPreLoginEditsRef.current = false;
@@ -198,7 +256,7 @@ export default function App() {
     }
   }, [googleUserEmail, pullStateFromGoogleDrive]);
 
-  // Auto-save in real time to connected Local PC File (if a file handle is active) and/or Google Drive when connected
+  // Auto-save in real time on every change to Local Browser Cache, Local PC File, and Google Drive
   useEffect(() => {
     saveAppState(appState, googleUserEmail);
 
@@ -236,6 +294,7 @@ export default function App() {
         );
         liveDriveFileIdRef.current = uploaded.id;
         lastSavedJsonRef.current = currentJson;
+        setDriveAuthExpiredNotice(false);
         setLastDriveSavedAt(
           new Date().toLocaleTimeString('it-IT', {
             hour: '2-digit',
@@ -244,14 +303,31 @@ export default function App() {
           })
         );
         setDriveSyncState('saved');
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.message === 'AUTH_REQUIRED') {
+          setDriveAuthExpiredNotice(true);
+        }
         console.error('Live Drive auto-save error:', err);
         setDriveSyncState('error');
       }
-    }, 1200);
+    }, 800);
 
     return () => clearTimeout(timer);
   }, [appState, googleUserEmail]);
+
+  // Periodic Automatic Google Drive Sync Timer (every 90 seconds) to ensure Drive folder & database file are always aligned
+  useEffect(() => {
+    if (!googleUserEmail) return;
+    const interval = setInterval(async () => {
+      if (isHydratingFromDriveRef.current) return;
+      const currentState = appStateRef.current;
+      const currentJson = exportBackupJSON(currentState);
+      if (currentJson !== lastSavedJsonRef.current || !liveDriveFileIdRef.current) {
+        await pushStateToGoogleDriveNow(currentState, googleUserEmail);
+      }
+    }, 90_000);
+    return () => clearInterval(interval);
+  }, [googleUserEmail, pushStateToGoogleDriveNow]);
 
   // Connect / Open a Local PC .json File (OneDrive / Dropbox / Hard Disk)
   const handleConnectLocalFile = async () => {
@@ -365,10 +441,12 @@ export default function App() {
     appState.initialFundCash
   );
 
-  // Detect potential duplicate movements (same verified person & same amount within 7 days max, or 0 days in same_day mode)
+  // Detect potential duplicate movements ONLY for newly imported or newly added transactions (targetDuplicateTxIds)
+  // Does NOT run automatically on app startup or login!
   const duplicateGroups = useMemo(
     () =>
-      detectDuplicateTransactions(
+      detectDuplicatesForNewTransactions(
+        targetDuplicateTxIds,
         appState.transactions,
         appState.members,
         appState.staff,
@@ -377,6 +455,7 @@ export default function App() {
         duplicateDetectionMode
       ),
     [
+      targetDuplicateTxIds,
       appState.transactions,
       appState.members,
       appState.staff,
@@ -391,6 +470,7 @@ export default function App() {
   );
 
   // System notifications across all modules (filtered by user-resolved or postponed notifications, including manual deadlines)
+  // Pass transactions for duplicate notifications ONLY when targetDuplicateTxIds is active
   const notifications = generateSystemNotifications(
     appState.members,
     appState.bookings,
@@ -400,7 +480,7 @@ export default function App() {
     appState.assemblies,
     new Date(),
     appState.grants,
-    appState.transactions,
+    targetDuplicateTxIds.length > 0 ? appState.transactions : [],
     ignoredDuplicateSignatures,
     appState.profile.notificationResolutions,
     appState.profile.customDeadlines || [],
@@ -410,12 +490,29 @@ export default function App() {
 
   // --- Handlers for Cash Transactions & Funds ---
   const handleAddTransaction = (newTx: Omit<CashTransaction, 'id'>) => {
-    const id = `tx-${Date.now()}`;
+    const id = `tx-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const tx: CashTransaction = { id, ...newTx };
-    setAppState((prev) => ({
-      ...prev,
-      transactions: [tx, ...prev.transactions],
-    }));
+    // Test ONLY this newly added movement against existing movements
+    setTargetDuplicateTxIds([id]);
+    setAppState((prev) => {
+      const nextTxs = [tx, ...prev.transactions];
+      const foundForNew = detectDuplicatesForNewTransactions(
+        [id],
+        nextTxs,
+        prev.members,
+        prev.staff,
+        7,
+        prev.profile.ignoredDuplicateSignatures || [],
+        prev.profile.duplicateDetectionMode || 'strict'
+      );
+      if (foundForNew.length > 0) {
+        setIsDuplicatesModalOpen(true);
+      }
+      return {
+        ...prev,
+        transactions: nextTxs,
+      };
+    });
   };
 
   const handleUpdateTransaction = (updatedTx: CashTransaction) => {
@@ -426,6 +523,7 @@ export default function App() {
   };
 
   const handleDeleteTransaction = (id: string) => {
+    setTargetDuplicateTxIds((prev) => prev.filter((item) => item !== id));
     setAppState((prev) => ({
       ...prev,
       transactions: prev.transactions.filter((t) => t.id !== id),
@@ -434,6 +532,7 @@ export default function App() {
 
   const handleDeleteMultipleTransactions = (ids: string[]) => {
     const idSet = new Set(ids);
+    setTargetDuplicateTxIds((prev) => prev.filter((item) => !idSet.has(item)));
     setAppState((prev) => ({
       ...prev,
       transactions: prev.transactions.filter((t) => !idSet.has(t.id)),
@@ -442,6 +541,7 @@ export default function App() {
 
   const handleLoadSampleDuplicates = () => {
     const sampleTxs = createSampleDuplicateTransactions(appState.profile.activeYear);
+    setTargetDuplicateTxIds(sampleTxs.map((t) => t.id));
     setAppState((prev) => ({
       ...prev,
       profile: {
@@ -453,22 +553,44 @@ export default function App() {
     }));
   };
 
+  const handleRunManualFullDuplicateScan = () => {
+    setTargetDuplicateTxIds(appState.transactions.map((t) => t.id));
+  };
+
   const handleImportTransactions = (
     txs: CashTransaction[],
     mode: 'append' | 'replace',
     newFunds?: { initialFund: number; initialFundBank: number; initialFundCash: number }
   ) => {
-    setAppState((prev) => ({
-      ...prev,
-      transactions: mode === 'replace' ? txs : [...txs, ...prev.transactions],
-      ...(newFunds
-        ? {
-            initialFund: newFunds.initialFund,
-            initialFundBank: newFunds.initialFundBank,
-            initialFundCash: newFunds.initialFundCash,
-          }
-        : {}),
-    }));
+    const importedIds = txs.map((t) => t.id);
+    // Run duplicate check once on the newly imported dataset
+    setTargetDuplicateTxIds(importedIds);
+    setAppState((prev) => {
+      const nextTxs = mode === 'replace' ? txs : [...txs, ...prev.transactions];
+      const foundOnImport = detectDuplicatesForNewTransactions(
+        importedIds,
+        nextTxs,
+        prev.members,
+        prev.staff,
+        7,
+        prev.profile.ignoredDuplicateSignatures || [],
+        prev.profile.duplicateDetectionMode || 'strict'
+      );
+      if (foundOnImport.length > 0) {
+        setIsDuplicatesModalOpen(true);
+      }
+      return {
+        ...prev,
+        transactions: nextTxs,
+        ...(newFunds
+          ? {
+              initialFund: newFunds.initialFund,
+              initialFundBank: newFunds.initialFundBank,
+              initialFundCash: newFunds.initialFundCash,
+            }
+          : {}),
+      };
+    });
   };
 
   const handleUpdateInitialFunds = (funds: {
@@ -898,6 +1020,25 @@ export default function App() {
             onCloseFullManual={() => setIsFullManualOpen(false)}
           />
 
+          {/* Banner if Google OAuth token expired while editing so user can reconnect in 1 click without losing anything */}
+          {driveAuthExpiredNotice && (
+            <div className="no-print mb-4 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-rose-950 shadow-2xs">
+              <div>
+                <strong>Sessione Google Drive scaduta:</strong> i tuoi dati sono salvati al sicuro
+                nella memoria locale del browser, ma per aggiornare il file nella cartella{' '}
+                <span className="font-mono font-semibold">Gestionale ASD</span> su Google Drive è
+                necessario riconnettere l&apos;account.
+              </div>
+              <button
+                type="button"
+                onClick={() => handleGoogleSignIn(false)}
+                className="px-3.5 py-1.5 bg-rose-700 hover:bg-rose-800 text-white font-bold rounded-lg transition-colors shrink-0"
+              >
+                Riconnetti Google Drive Ora
+              </button>
+            </div>
+          )}
+
           {/* Global Clickable Alert Banner when potential duplicate movements exist (on tabs other than cashflow which has its own detailed banner) */}
           {duplicateGroups.length > 0 && activeTab !== 'cashflow' && (
             <div
@@ -1178,7 +1319,19 @@ export default function App() {
       {/* Global Duplicate Transactions Popup Modal */}
       <DuplicateTransactionsModal
         isOpen={isDuplicatesModalOpen}
-        onClose={() => setIsDuplicatesModalOpen(false)}
+        onClose={() => {
+          // When closing the modal, mark any remaining displayed groups as reviewed/ignored so they don't keep nagging
+          if (duplicateGroups.length > 0) {
+            const current = new Set(appState.profile.ignoredDuplicateSignatures || []);
+            duplicateGroups.forEach((g) => current.add(g.signature));
+            handleUpdateProfile({
+              ...appState.profile,
+              ignoredDuplicateSignatures: Array.from(current),
+            });
+          }
+          setTargetDuplicateTxIds([]);
+          setIsDuplicatesModalOpen(false);
+        }}
         duplicateGroups={duplicateGroups}
         onDeleteTransactions={handleDeleteMultipleTransactions}
         onIgnoreGroupSignature={(sig) => {
@@ -1197,15 +1350,18 @@ export default function App() {
             ...appState.profile,
             ignoredDuplicateSignatures: Array.from(current),
           });
+          setTargetDuplicateTxIds([]);
         }}
         ignoredCount={ignoredDuplicateSignatures.length}
-        onResetIgnoredGroups={() =>
+        onResetIgnoredGroups={() => {
           handleUpdateProfile({
             ...appState.profile,
             ignoredDuplicateSignatures: [],
-          })
-        }
+          });
+          setTargetDuplicateTxIds(appState.transactions.map((t) => t.id));
+        }}
         onLoadSampleDuplicates={handleLoadSampleDuplicates}
+        onRunManualFullScan={handleRunManualFullDuplicateScan}
         duplicateDetectionMode={duplicateDetectionMode}
         onChangeDuplicateDetectionMode={(mode) =>
           handleUpdateProfile({

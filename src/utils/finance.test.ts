@@ -25,6 +25,7 @@ import {
   resetToEmpty2027,
   loadAppState,
   saveAppState,
+  countAppStateRecords,
   computeYearTransitionMemberStats,
 } from './storage';
 import { buildAccountingSpreadsheetTabs } from './export';
@@ -46,7 +47,10 @@ import {
   resolveDynamicTextPlaceholders,
 } from './formAndReceiptTemplates';
 import { getPageGuide, getAllPageGuides } from './pageGuides';
-import { detectDuplicateTransactions } from './duplicates';
+import {
+  detectDuplicateTransactions,
+  detectDuplicatesForNewTransactions,
+} from './duplicates';
 import {
   buildCriticalYearDeadlines,
   formatRemainingTimeHuman,
@@ -1354,4 +1358,84 @@ describe('Sortable Members, Event Discounts (Fixed € / %), Vouchers & Smart Re
     const hiddenCu = modifiedDeadlines.deadlines.find((d) => d.id === 'std-cu-lavoro-sportivo');
     assert.equal(hiddenCu, undefined);
   });
+
+  it('tests only newly added or imported transactions for duplicates (detectDuplicatesForNewTransactions) and counts state records accurately', () => {
+    const ledgerTxs: CashTransaction[] = [
+      // Historical pair (already in archive)
+      {
+        id: 'tx-old-1',
+        date: '2027-02-01',
+        category: 'Tessere',
+        income: 20,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Quota Tessera Mario Rossi',
+      },
+      {
+        id: 'tx-old-2',
+        date: '2027-02-03',
+        category: 'Tessere',
+        income: 20,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Tessera Annuale Rossi Mario',
+      },
+      // Existing single movement for Elena Verdi
+      {
+        id: 'tx-elena-1',
+        date: '2027-05-10',
+        category: 'Evento',
+        income: 70,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Caparra Evento Elena Verdi',
+      },
+      // Newly added movement for Giulia Neri (not a duplicate)
+      {
+        id: 'tx-new-unique',
+        date: '2027-05-11',
+        category: 'Evento',
+        income: 70,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Caparra Evento Giulia Neri',
+      },
+      // Newly added movement for Elena Verdi (duplicate of tx-elena-1)
+      {
+        id: 'tx-new-elena-dup',
+        date: '2027-05-12',
+        category: 'Evento',
+        income: 70,
+        expense: null,
+        method: 'Bonifico',
+        description: 'Caparra Rifugio Verdi Elena',
+      },
+    ];
+
+    // 1. On app startup (empty target IDs): 0 duplicate groups flagged
+    assert.equal(detectDuplicatesForNewTransactions([], ledgerTxs).length, 0);
+
+    // 2. When adding a unique movement ('tx-new-unique'): 0 groups flagged (ignores historical Mario Rossi pair!)
+    assert.equal(
+      detectDuplicatesForNewTransactions(['tx-new-unique'], ledgerTxs).length,
+      0
+    );
+
+    // 3. When adding a duplicate movement ('tx-new-elena-dup'): flags ONLY Elena Verdi's group, not Mario Rossi
+    const newElenaGroups = detectDuplicatesForNewTransactions(
+      ['tx-new-elena-dup'],
+      ledgerTxs
+    );
+    assert.equal(newElenaGroups.length, 1);
+    assert.ok(newElenaGroups[0].personName.toLowerCase().includes('verdi'));
+
+    // 4. countAppStateRecords accurately distinguishes empty vs populated state
+    const emptyState = resetToEmpty2027(null, 2027);
+    assert.equal(countAppStateRecords(emptyState), 0);
+    assert.equal(
+      countAppStateRecords({ ...emptyState, transactions: ledgerTxs }),
+      ledgerTxs.length
+    );
+  });
 });
+

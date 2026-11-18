@@ -213,6 +213,11 @@ export async function listDriveFiles(query?: string): Promise<DriveFileItem[]> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  if (res.status === 401) {
+    cachedAccessToken = null;
+    saveSessionAccessToken(null);
+    throw new Error('AUTH_REQUIRED');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error?.message || `Errore Google Drive (${res.status})`);
@@ -256,6 +261,11 @@ export async function findOrCreateDriveFolder(
     }
   );
 
+  if (res.status === 401) {
+    cachedAccessToken = null;
+    saveSessionAccessToken(null);
+    throw new Error('AUTH_REQUIRED');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error?.message || 'Impossibile creare la cartella su Google Drive');
@@ -330,48 +340,103 @@ export async function uploadFileToDrive(params: {
   const token = await getAccessToken();
   if (!token) throw new Error('AUTH_REQUIRED');
 
+  const contentType = params.mimeType || 'application/octet-stream';
+  const fileBlob =
+    typeof params.content === 'string'
+      ? new Blob([params.content], { type: contentType })
+      : params.content;
+
+  // 1. If an existingFileId is provided, update its media content directly via uploadType=media
+  if (params.existingFileId) {
+    const safeExistingId = encodeURIComponent(params.existingFileId.trim());
+    const patchRes = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${safeExistingId}?uploadType=media&fields=id,name,mimeType,webViewLink,modifiedTime`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': contentType,
+        },
+        body: fileBlob,
+      }
+    );
+
+    if (patchRes.status === 401) {
+      cachedAccessToken = null;
+      saveSessionAccessToken(null);
+      throw new Error('AUTH_REQUIRED');
+    }
+    if (patchRes.ok) {
+      return await patchRes.json();
+    }
+    // If 404 (file was deleted from Drive), fall through to create a new file inside the target folder
+  }
+
+  // 2. Resolve target folder inside "Gestionale ASD"
   let targetFolderId = params.folderId;
-  if (!targetFolderId && params.category && !params.existingFileId) {
+  if (!targetFolderId && params.category) {
     const { categoryFolder } = await getOrCreateDriveCategoryFolder(params.category);
     targetFolderId = categoryFolder.id;
   }
 
+  // 3. Create the file metadata inside the target folder using pure JSON POST
   const metadata: Record<string, any> = {
     name: params.name,
-    mimeType: params.mimeType,
+    mimeType: contentType,
   };
-  if (targetFolderId && !params.existingFileId) {
+  if (targetFolderId) {
     metadata.parents = [targetFolderId];
   }
 
-  const form = new FormData();
-  form.append(
-    'metadata',
-    new Blob([JSON.stringify(metadata)], { type: 'application/json' })
+  const createRes = await fetch(
+    'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,modifiedTime,parents',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(metadata),
+    }
   );
-  const fileBlob =
-    typeof params.content === 'string'
-      ? new Blob([params.content], { type: params.mimeType })
-      : params.content;
-  form.append('file', fileBlob);
 
-  const endpoint = params.existingFileId
-    ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
-        params.existingFileId
-      )}?uploadType=multipart&fields=id,name,mimeType,webViewLink,modifiedTime`
-    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,modifiedTime';
-
-  const res = await fetch(endpoint, {
-    method: params.existingFileId ? 'PATCH' : 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || 'Errore durante il caricamento su Google Drive');
+  if (createRes.status === 401) {
+    cachedAccessToken = null;
+    saveSessionAccessToken(null);
+    throw new Error('AUTH_REQUIRED');
   }
-  return await res.json();
+  if (!createRes.ok) {
+    const err = await createRes.json().catch(() => ({}));
+    throw new Error(err?.error?.message || 'Errore nella creazione del file su Google Drive');
+  }
+
+  const createdMeta: DriveFileItem = await createRes.json();
+
+  // 4. Upload the file content via PATCH ?uploadType=media
+  const mediaRes = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
+      createdMeta.id
+    )}?uploadType=media&fields=id,name,mimeType,webViewLink,modifiedTime`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': contentType,
+      },
+      body: fileBlob,
+    }
+  );
+
+  if (mediaRes.status === 401) {
+    cachedAccessToken = null;
+    saveSessionAccessToken(null);
+    throw new Error('AUTH_REQUIRED');
+  }
+  if (!mediaRes.ok) {
+    const err = await mediaRes.json().catch(() => ({}));
+    throw new Error(err?.error?.message || 'Errore durante il caricamento dei dati su Google Drive');
+  }
+  return await mediaRes.json();
 }
 
 export async function downloadDriveFileText(fileId: string): Promise<string> {
@@ -382,6 +447,11 @@ export async function downloadDriveFileText(fileId: string): Promise<string> {
   const res = await fetch(`https://www.googleapis.com/drive/v3/files/${safeId}?alt=media`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  if (res.status === 401) {
+    cachedAccessToken = null;
+    saveSessionAccessToken(null);
+    throw new Error('AUTH_REQUIRED');
+  }
   if (!res.ok) {
     throw new Error('Impossibile scaricare il file privato da Google Drive');
   }
@@ -398,6 +468,11 @@ export async function deleteDriveFile(fileId: string): Promise<void> {
     headers: { Authorization: `Bearer ${token}` },
   });
 
+  if (res.status === 401) {
+    cachedAccessToken = null;
+    saveSessionAccessToken(null);
+    throw new Error('AUTH_REQUIRED');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error?.message || 'Impossibile eliminare il file da Google Drive');
@@ -419,34 +494,44 @@ export async function loadLiveDatabaseFromDrive(): Promise<{
   const token = await getAccessToken();
   if (!token) return null;
 
-  // 1. Check for the canonical live DB file first
+  // 1. Check for the canonical live DB file first (without strict mimeType filter in case Drive indexed it as text/plain)
   const liveFiles = await listDriveFiles(
-    `name = '${LIVE_DB_FILENAME}' and mimeType = 'application/json' and trashed = false`
+    `name = '${LIVE_DB_FILENAME}' and trashed = false`
   );
-  if (liveFiles.length > 0) {
-    const latest = liveFiles[0];
-    const content = await downloadDriveFileText(latest.id);
-    return {
-      fileId: latest.id,
-      content,
-      modifiedTime: latest.modifiedTime,
-      webViewLink: latest.webViewLink,
-    };
+  for (const file of liveFiles) {
+    try {
+      const content = await downloadDriveFileText(file.id);
+      if (content && content.trim().startsWith('{')) {
+        return {
+          fileId: file.id,
+          content,
+          modifiedTime: file.modifiedTime,
+          webViewLink: file.webViewLink,
+        };
+      }
+    } catch {
+      // Try next file if any
+    }
   }
 
-  // 2. Fallback to any previous Backup_Apuacamp*.json if migrating
+  // 2. Fallback to any previous Backup_Apuacamp*.json or Database_*.json on Drive
   const fallbackFiles = await listDriveFiles(
-    "name contains 'Backup_Apuacamp' and mimeType = 'application/json' and trashed = false"
+    "(name contains 'Backup_Apuacamp' or name contains 'Database_ASD') and trashed = false"
   );
-  if (fallbackFiles.length > 0) {
-    const latest = fallbackFiles[0];
-    const content = await downloadDriveFileText(latest.id);
-    return {
-      fileId: '', // Will create the canonical LIVE_DB_FILENAME on next save
-      content,
-      modifiedTime: latest.modifiedTime,
-      webViewLink: latest.webViewLink,
-    };
+  for (const file of fallbackFiles) {
+    try {
+      const content = await downloadDriveFileText(file.id);
+      if (content && content.trim().startsWith('{')) {
+        return {
+          fileId: '', // Will create the canonical LIVE_DB_FILENAME on next save
+          content,
+          modifiedTime: file.modifiedTime,
+          webViewLink: file.webViewLink,
+        };
+      }
+    } catch {
+      // Try next fallback file
+    }
   }
 
   return null;
@@ -467,7 +552,7 @@ export async function saveLiveDatabaseToDrive(
 
   if (!targetFileId) {
     const existing = await listDriveFiles(
-      `name = '${LIVE_DB_FILENAME}' and mimeType = 'application/json' and trashed = false`
+      `name = '${LIVE_DB_FILENAME}' and trashed = false`
     );
     if (existing.length > 0) {
       targetFileId = existing[0].id;

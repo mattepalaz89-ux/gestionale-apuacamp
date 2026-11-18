@@ -421,10 +421,6 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
               <Wallet className="w-4 h-4 text-emerald-600" />
               <span>Contabilità & Libro Cassa {profile.activeYear}</span>
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Registro movimenti con scelta data reale, spese ricorrenti, controllo duplicati ed
-              esportazione contabile (`.xlsx`).
-            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">

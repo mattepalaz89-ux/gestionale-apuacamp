@@ -71,6 +71,24 @@ const BASE_KEYS = [
   'recurring_expenses',
 ];
 
+const SNAPSHOT_KEY_LATEST = 'apuacamp_working_snapshot_v4_latest';
+
+function getSnapshotKey(userEmail?: string | null): string {
+  const cleanUser = (userEmail || 'local_private').toLowerCase().replace(/[^a-z0-9@._-]/g, '_');
+  return `apuacamp_working_snapshot_v4_${cleanUser}`;
+}
+
+export function countAppStateRecords(state: AppState): number {
+  if (!state) return 0;
+  return (
+    (state.members?.length || 0) +
+    (state.transactions?.length || 0) +
+    (state.bookings?.length || 0) +
+    (state.gadgetOrders?.length || 0) +
+    (state.recurringExpenses?.length || 0)
+  );
+}
+
 export function clearLegacyBrowserStorage(userEmail?: string | null): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
@@ -85,19 +103,55 @@ export function clearLegacyBrowserStorage(userEmail?: string | null): void {
 
 export function loadAppState(userEmail?: string | null, startYear?: number): AppState {
   clearLegacyBrowserStorage(userEmail);
+  if (startYear !== undefined) {
+    return resetToEmpty2027(userEmail, startYear);
+  }
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const scopedRaw = userEmail
+        ? window.localStorage.getItem(getSnapshotKey(userEmail))
+        : null;
+      const latestRaw = window.localStorage.getItem(SNAPSHOT_KEY_LATEST);
+      const rawToUse = scopedRaw || latestRaw;
+      if (rawToUse) {
+        const parsed = parseBackupJSON(rawToUse);
+        if (parsed) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+  }
   return resetToEmpty2027(userEmail, startYear);
 }
 
 /**
- * Browser localStorage persistence is intentionally disabled so member & accounting data
- * is stored exclusively on Google Drive or in a local file on the user's PC (OneDrive/Dropbox/Disk).
+ * Persists a local safety snapshot in browser storage so uploaded Soci & Movimenti
+ * are never lost before/between Google Drive syncs or page refreshes.
  */
-export function saveAppState(_state: AppState, userEmail?: string | null): void {
+export function saveAppState(state: AppState, userEmail?: string | null): void {
   clearLegacyBrowserStorage(userEmail);
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const serialized = JSON.stringify(state);
+    window.localStorage.setItem(getSnapshotKey(userEmail), serialized);
+    window.localStorage.setItem(SNAPSHOT_KEY_LATEST, serialized);
+  } catch {
+    // Ignore quota or non-browser errors
+  }
 }
 
 export function resetToEmpty2027(userEmail?: string | null, startYear?: number): AppState {
   clearLegacyBrowserStorage(userEmail);
+  if (typeof window !== 'undefined' && window.localStorage && startYear === undefined) {
+    try {
+      window.localStorage.removeItem(getSnapshotKey(userEmail));
+      window.localStorage.removeItem(SNAPSHOT_KEY_LATEST);
+    } catch {
+      // ignore
+    }
+  }
   const effectiveYear = startYear ?? INITIAL_ASSOCIATION_PROFILE.activeYear;
   return {
     members: INITIAL_MEMBERS,

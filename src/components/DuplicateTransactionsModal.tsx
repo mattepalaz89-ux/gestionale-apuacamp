@@ -26,6 +26,7 @@ interface DuplicateTransactionsModalProps {
   ignoredCount: number;
   onResetIgnoredGroups: () => void;
   onLoadSampleDuplicates?: () => void;
+  onRunManualFullScan?: () => void;
   duplicateDetectionMode?: DuplicateDetectionMode;
   onChangeDuplicateDetectionMode?: (mode: DuplicateDetectionMode) => void;
 }
@@ -40,6 +41,7 @@ export const DuplicateTransactionsModal: React.FC<DuplicateTransactionsModalProp
   ignoredCount,
   onResetIgnoredGroups,
   onLoadSampleDuplicates,
+  onRunManualFullScan,
   duplicateDetectionMode = 'strict',
   onChangeDuplicateDetectionMode,
 }) => {
@@ -360,6 +362,21 @@ export const DuplicateTransactionsModal: React.FC<DuplicateTransactionsModalProp
               </p>
 
               <div className="pt-3 flex flex-wrap items-center justify-center gap-2">
+                {onRunManualFullScan && (
+                  <button
+                    id="btn-run-manual-full-duplicate-scan"
+                    type="button"
+                    onClick={() => {
+                      setFeedbackBanner(null);
+                      onRunManualFullScan();
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-colors"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>Controlla Ora Tutto lo Storico Movimenti</span>
+                  </button>
+                )}
+
                 {onLoadSampleDuplicates && (
                   <button
                     id="btn-load-sample-duplicates"

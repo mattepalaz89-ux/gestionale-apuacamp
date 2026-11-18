@@ -595,6 +595,36 @@ export function detectDuplicateTransactions(
 }
 
 /**
+ * Tests ONLY a specific subset of newly added or newly imported transactions (by ID)
+ * against the full transaction list. Returns only duplicate groups that involve at least
+ * one transaction from `newTransactionIds`.
+ */
+export function detectDuplicatesForNewTransactions(
+  newTransactionIds: string[],
+  allTransactions: CashTransaction[],
+  members: Member[] = [],
+  staff: StaffMember[] = [],
+  maxDaysWindow: number = 7,
+  ignoredSignatures: string[] = [],
+  mode: DuplicateDetectionMode = 'strict'
+): DuplicateTransactionGroup[] {
+  if (mode === 'off') return [];
+  if (!newTransactionIds || newTransactionIds.length === 0) return [];
+  const targetIdSet = new Set(newTransactionIds);
+  const allGroups = detectDuplicateTransactions(
+    allTransactions,
+    members,
+    staff,
+    maxDaysWindow,
+    ignoredSignatures,
+    mode
+  );
+  return allGroups.filter((grp) =>
+    grp.allTransactions.some((t) => targetIdSet.has(t.id))
+  );
+}
+
+/**
  * Generates realistic sample duplicate transactions so the user can test and verify
  * the duplicate alert & popup deletion workflow on demand.
  */
