@@ -17,6 +17,10 @@ import {
   Archive,
   AlertTriangle,
   CopyCheck,
+  Undo2,
+  Redo2,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import {
   CashTransaction,
@@ -27,7 +31,7 @@ import {
   DuplicateTransactionGroup,
   RecurringExpensePlan,
 } from '../types';
-import { formatEuro, calculateCashTotals } from '../utils/finance';
+import { formatEuro, calculateCashTotals, parseAmount } from '../utils/finance';
 import { RecurringExpensesPanel } from './RecurringExpensesPanel';
 import { TransactionDateSelector } from './TransactionDateSelector';
 import {
@@ -66,6 +70,7 @@ interface CashFlowViewProps {
   onAddTransaction: (tx: Omit<CashTransaction, 'id'>) => void;
   onUpdateTransaction?: (tx: CashTransaction) => void;
   onDeleteTransaction: (id: string) => void;
+  onDeleteMultipleTransactions?: (ids: string[]) => void;
   onImportTransactions: (
     txs: CashTransaction[],
     mode: 'append' | 'replace',
@@ -79,6 +84,11 @@ interface CashFlowViewProps {
   onUpdateProfile: (profile: AssociationProfile) => void;
   onOpenReceiptModalForTransaction: (tx: CashTransaction) => void;
   onNavigateToArchive?: () => void;
+  canUndo?: boolean;
+  lastUndoLabel?: string | null;
+  onUndo?: () => void;
+  canRedo?: boolean;
+  onRedo?: () => void;
 }
 
 export const CashFlowView: React.FC<CashFlowViewProps> = ({
@@ -98,11 +108,17 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
   onAddTransaction,
   onUpdateTransaction,
   onDeleteTransaction,
+  onDeleteMultipleTransactions,
   onImportTransactions,
   onUpdateInitialFunds,
   onUpdateProfile,
   onOpenReceiptModalForTransaction,
   onNavigateToArchive,
+  canUndo = false,
+  lastUndoLabel = null,
+  onUndo,
+  canRedo = false,
+  onRedo,
 }) => {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -116,6 +132,19 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
   } | null>(null);
   const [isSyncingGoogle, setIsSyncingGoogle] = useState(false);
   const [isImportDrawerOpen, setIsImportDrawerOpen] = useState(false);
+  const [excelImportMode, setExcelImportMode] = useState<'append' | 'replace'>('append');
+
+  // Multi-select state for bulk deletion
+  const [selectedTxIds, setSelectedTxIds] = useState<Set<string>>(new Set());
+
+  // Edit existing transaction modal state
+  const [editingTx, setEditingTx] = useState<CashTransaction | null>(null);
+  const [editDate, setEditDate] = useState<string>('');
+  const [editType, setEditType] = useState<'income' | 'expense'>('income');
+  const [editAmount, setEditAmount] = useState<string>('');
+  const [editCategory, setEditCategory] = useState<CashCategory>('Evento');
+  const [editMethod, setEditMethod] = useState<PaymentMethod>('Bonifico');
+  const [editDescription, setEditDescription] = useState<string>('');
 
   // Set of transaction IDs involved in any duplicate group
   const duplicateTxInfoMap = useMemo(() => {
@@ -195,15 +224,115 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         const descMatch = (t.description || '').toLowerCase().includes(q);
         const catMatch = (t.category || '').toLowerCase().includes(q);
         const methMatch = (t.method || '').toLowerCase().includes(q);
-        return descMatch || catMatch || methMatch;
+        const dateMatch = (t.date || '').toLowerCase().includes(q);
+        return descMatch || catMatch || methMatch || dateMatch;
       }
       return true;
     });
   }, [transactions, selectedCategory, selectedMethod, selectedType, search]);
 
+  // Keep only valid existing IDs in selectedTxIds
+  const activeSelectedIds = useMemo(() => {
+    const existingSet = new Set(transactions.map((t) => t.id));
+    const valid: string[] = [];
+    selectedTxIds.forEach((id) => {
+      if (existingSet.has(id)) valid.push(id);
+    });
+    return valid;
+  }, [selectedTxIds, transactions]);
+
+  const allFilteredSelected =
+    filteredTransactions.length > 0 &&
+    filteredTransactions.every((t) => selectedTxIds.has(t.id));
+
+  const handleToggleSelectRow = (id: string) => {
+    setSelectedTxIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelectAllFiltered = () => {
+    if (allFilteredSelected) {
+      setSelectedTxIds((prev) => {
+        const next = new Set(prev);
+        filteredTransactions.forEach((t) => next.delete(t.id));
+        return next;
+      });
+    } else {
+      setSelectedTxIds((prev) => {
+        const next = new Set(prev);
+        filteredTransactions.forEach((t) => next.add(t.id));
+        return next;
+      });
+    }
+  };
+
+  const handleBulkDeleteSelected = () => {
+    if (activeSelectedIds.length === 0) return;
+    if (
+      !confirm(
+        `Confermi l'eliminazione simultanea di ${activeSelectedIds.length} ${
+          activeSelectedIds.length === 1 ? 'movimento selezionato' : 'movimenti selezionati'
+        }?\n\n(Potrai comunque annullare l'operazione con il pulsante "Annulla" in alto).`
+      )
+    ) {
+      return;
+    }
+    if (onDeleteMultipleTransactions) {
+      onDeleteMultipleTransactions(activeSelectedIds);
+    } else {
+      activeSelectedIds.forEach((id) => onDeleteTransaction(id));
+    }
+    setSelectedTxIds(new Set());
+    setBannerMsg({
+      type: 'ok',
+      text: `Eliminati ${activeSelectedIds.length} movimenti di cassa. Usa "Annulla" se vuoi ripristinarli.`,
+    });
+  };
+
+  const handleOpenEditModal = (tx: CashTransaction) => {
+    setEditingTx(tx);
+    setEditDate(tx.date);
+    const isInc = (tx.income ?? 0) > 0;
+    setEditType(isInc ? 'income' : 'expense');
+    setEditAmount(String(isInc ? tx.income : tx.expense || 0));
+    setEditCategory(tx.category);
+    setEditMethod(tx.method);
+    setEditDescription(tx.description);
+  };
+
+  const handleSaveEditedTransaction = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTx || !onUpdateTransaction) return;
+    const parsed = parseAmount(editAmount);
+    if (parsed <= 0 || !editDescription.trim()) return;
+
+    onUpdateTransaction({
+      ...editingTx,
+      date: editDate || editingTx.date,
+      category: editCategory,
+      method: editMethod,
+      income: editType === 'income' ? parsed : null,
+      expense: editType === 'expense' ? parsed : null,
+      description: editDescription.trim(),
+    });
+
+    setEditingTx(null);
+    setBannerMsg({
+      type: 'ok',
+      text: `Movimento "${editDescription.trim()}" aggiornato con successo!`,
+    });
+  };
+
   const handleCreateTransaction = (e: React.FormEvent) => {
     e.preventDefault();
-    const parsed = parseFloat(newAmount.replace(',', '.'));
+    const parsed = parseAmount(newAmount);
     if (isNaN(parsed) || parsed <= 0 || !newDescription.trim()) return;
 
     const effectiveDate =
@@ -225,8 +354,8 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
 
   const handleSaveFunds = (e: React.FormEvent) => {
     e.preventDefault();
-    const b = parseFloat(editBank.replace(',', '.')) || 0;
-    const c = parseFloat(editCash.replace(',', '.')) || 0;
+    const b = parseAmount(editBank);
+    const c = parseAmount(editCash);
     onUpdateInitialFunds({
       initialFund: Math.round((b + c) * 100) / 100,
       initialFundBank: b,
@@ -244,13 +373,17 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
       if (parsed.length === 0) {
         setBannerMsg({
           type: 'err',
-          text: 'Nessun movimento valido trovato nel file. Verifica le colonne del Modello Vuoto.',
+          text: 'Nessun movimento valido trovato nel file. Verifica che siano presenti le colonne Data e Entrata/Uscita.',
         });
       } else {
-        onImportTransactions(parsed, 'append');
+        onImportTransactions(parsed, excelImportMode);
+        setSelectedTxIds(new Set());
         setBannerMsg({
           type: 'ok',
-          text: `Importati ${parsed.length} movimenti di cassa dal file "${file.name}"!`,
+          text:
+            excelImportMode === 'replace'
+              ? `Sostituito il Libro Cassa con ${parsed.length} movimenti importati dal file "${file.name}"! (Puoi cliccare "Annulla" se vuoi tornare indietro).`
+              : `Importati ${parsed.length} movimenti di cassa dal file "${file.name}"! (Puoi cliccare "Annulla" se vuoi annullare l'importazione).`,
         });
       }
     } catch (err: any) {
@@ -413,7 +546,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
 
   return (
     <div className="space-y-5">
-      {/* Streamlined Top Bar + Collapsible Import / Google Sheets / Strumenti Drawer (Soluzione 5) */}
+      {/* Streamlined Top Bar + Undo/Redo + Collapsible Import / Google Sheets / Strumenti Drawer */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
@@ -424,6 +557,51 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {/* Undo / Redo Buttons */}
+            {onUndo && (
+              <div className="flex items-center">
+                <button
+                  id="btn-cashflow-undo"
+                  type="button"
+                  onClick={onUndo}
+                  disabled={!canUndo}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold border transition-colors ${
+                    onRedo ? 'rounded-l-lg' : 'rounded-lg'
+                  } ${
+                    canUndo
+                      ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200 shadow-2xs'
+                      : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+                  }`}
+                  title={
+                    canUndo && lastUndoLabel
+                      ? `Annulla ultima operazione: ${lastUndoLabel} (Ctrl+Z)`
+                      : 'Nessuna operazione recente da annullare'
+                  }
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                  <span>
+                    {canUndo && lastUndoLabel ? `Annulla (${lastUndoLabel})` : 'Annulla'}
+                  </span>
+                </button>
+                {onRedo && (
+                  <button
+                    id="btn-cashflow-redo"
+                    type="button"
+                    onClick={onRedo}
+                    disabled={!canRedo}
+                    className={`p-1.5 text-xs font-semibold border border-l-0 rounded-r-lg transition-colors ${
+                      canRedo
+                        ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200'
+                        : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+                    }`}
+                    title="Ripeti operazione annullata (Ctrl+Y)"
+                  >
+                    <Redo2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+
             {onOpenDuplicatesModal && (
               <button
                 id="btn-cashflow-open-duplicates-modal"
@@ -479,9 +657,36 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
             id="cashflow-import-drawer-panel"
             className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs animate-in fade-in duration-150"
           >
-            <span className="text-slate-600 font-medium">
-              Importazione Excel/CSV, sincronizzazione Google Sheets e strumenti avanzati:
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-slate-600 font-medium">Modalità importazione Excel/CSV:</span>
+              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setExcelImportMode('append')}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                    excelImportMode === 'append'
+                      ? 'bg-emerald-700 text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  title="Aggiunge i movimenti del file Excel a quelli già presenti"
+                >
+                  Accoda ai presenti
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExcelImportMode('replace')}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                    excelImportMode === 'replace'
+                      ? 'bg-amber-600 text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  title="Sostituisce tutti i movimenti correnti con quelli del file Excel caricato"
+                >
+                  Sostituisci cassa corrente
+                </button>
+              </div>
+            </div>
+
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => downloadEmptyExcelTemplate('cassa')}
@@ -497,7 +702,11 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
               >
                 <Upload className="w-3.5 h-3.5" />
-                <span>Importa Cassa Excel/CSV</span>
+                <span>
+                  {excelImportMode === 'replace'
+                    ? 'Importa e Sostituisci Excel/CSV'
+                    : 'Importa Cassa Excel/CSV'}
+                </span>
                 <input
                   type="file"
                   accept=".xlsx,.xls,.csv"
@@ -641,6 +850,16 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         >
           <span className="font-medium">{bannerMsg.text}</span>
           <div className="flex items-center gap-3">
+            {canUndo && onUndo && (
+              <button
+                type="button"
+                onClick={onUndo}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white border border-slate-300 text-slate-800 font-bold hover:bg-slate-100 transition-colors"
+              >
+                <Undo2 className="w-3 h-3" />
+                <span>Annulla Operazione</span>
+              </button>
+            )}
             {bannerMsg.linkUrl && (
               <a
                 href={bannerMsg.linkUrl}
@@ -746,7 +965,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Filtra per causale o socio..."
+              placeholder="Filtra per data, causale o socio..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full text-xs pl-8 pr-3 py-1.5 rounded-lg border border-slate-200 focus:border-emerald-500 focus:outline-hidden"
@@ -814,6 +1033,27 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {filteredTransactions.length > 0 && (
+            <button
+              id="btn-cashflow-select-all-filtered"
+              type="button"
+              onClick={handleToggleSelectAllFiltered}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
+              title="Seleziona o deseleziona tutti i movimenti mostrati per eliminarli insieme"
+            >
+              {allFilteredSelected ? (
+                <CheckSquare className="w-3.5 h-3.5 text-emerald-700" />
+              ) : (
+                <Square className="w-3.5 h-3.5 text-slate-400" />
+              )}
+              <span>
+                {allFilteredSelected
+                  ? 'Deseleziona Tutti'
+                  : `Seleziona Tutti (${filteredTransactions.length})`}
+              </span>
+            </button>
+          )}
+
           <button
             onClick={() => exportTransactionsToCSV(filteredTransactions)}
             title="Esporta Movimenti Filtrati in CSV"
@@ -838,25 +1078,82 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         </div>
       </div>
 
+      {/* Bulk Multi-Select Action Bar when 1 or more transactions are checked */}
+      {activeSelectedIds.length > 0 && (
+        <div
+          id="cashflow-bulk-selection-bar"
+          className="bg-slate-900 text-white px-4 py-3 rounded-xl shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs animate-in fade-in duration-150"
+        >
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="px-2.5 py-1 rounded-md bg-emerald-600 font-mono font-bold text-white">
+              {activeSelectedIds.length}{' '}
+              {activeSelectedIds.length === 1 ? 'voce selezionata' : 'voci selezionate'}
+            </span>
+            <span className="text-slate-300">
+              Puoi eliminare tutte le voci selezionate con un solo clic oppure deselezionarle.
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {!allFilteredSelected && filteredTransactions.length > activeSelectedIds.length && (
+              <button
+                type="button"
+                onClick={handleToggleSelectAllFiltered}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold transition-colors"
+              >
+                Seleziona tutti i {filteredTransactions.length} filtrati
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setSelectedTxIds(new Set())}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors"
+            >
+              Deseleziona
+            </button>
+            <button
+              id="btn-cashflow-bulk-delete-selected"
+              type="button"
+              onClick={handleBulkDeleteSelected}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold transition-colors shadow-xs"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Elimina Selezionati ({activeSelectedIds.length})</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Ledger Table */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
-                <th className="py-3 px-4 w-28">Data</th>
-                <th className="py-3 px-4 w-32">Categoria</th>
+                <th className="py-3 pl-4 pr-2 w-10 text-center">
+                  <input
+                    id="checkbox-cashflow-select-all"
+                    type="checkbox"
+                    checked={allFilteredSelected}
+                    onChange={handleToggleSelectAllFiltered}
+                    disabled={filteredTransactions.length === 0}
+                    className="w-3.5 h-3.5 rounded-xs border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                    title="Seleziona o deseleziona tutti i movimenti mostrati"
+                  />
+                </th>
+                <th className="py-3 px-3 w-28">Data</th>
+                <th className="py-3 px-3 w-32">Categoria</th>
                 <th className="py-3 px-4">Causale & Dettagli</th>
-                <th className="py-3 px-4 w-28">Canale</th>
-                <th className="py-3 px-4 text-right w-28">Entrata</th>
-                <th className="py-3 px-4 text-right w-28">Uscita</th>
-                <th className="py-3 px-4 text-center w-28">Azioni & Drive</th>
+                <th className="py-3 px-3 w-28">Canale</th>
+                <th className="py-3 px-3 text-right w-28">Entrata</th>
+                <th className="py-3 px-3 text-right w-28">Uscita</th>
+                <th className="py-3 px-4 text-center w-36">Azioni & Modifica</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredTransactions.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center">
+                  <td colSpan={8} className="py-12 text-center">
                     <div className="max-w-md mx-auto space-y-1.5">
                       <div className="text-slate-700 font-bold text-sm">
                         {transactions.length === 0
@@ -874,19 +1171,31 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
               ) : (
                 filteredTransactions.map((tx) => {
                   const dupInfo = duplicateTxInfoMap.get(tx.id);
+                  const isSelected = selectedTxIds.has(tx.id);
                   return (
                     <tr
                       key={tx.id}
                       className={`transition-colors group ${
-                        dupInfo?.isSuggestedDuplicate
+                        isSelected
+                          ? 'bg-emerald-50/70 hover:bg-emerald-50'
+                          : dupInfo?.isSuggestedDuplicate
                           ? 'bg-amber-50/60 hover:bg-amber-50'
                           : 'hover:bg-slate-50/80'
                       }`}
                     >
-                      <td className="py-2.5 px-4 font-mono text-slate-600 tabular-nums whitespace-nowrap">
+                      <td className="py-2.5 pl-4 pr-2 text-center whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleSelectRow(tx.id)}
+                          aria-label={`Seleziona movimento ${tx.description}`}
+                          className="w-3.5 h-3.5 rounded-xs border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-slate-600 tabular-nums whitespace-nowrap">
                         {tx.date}
                       </td>
-                      <td className="py-2.5 px-4 font-medium text-slate-800 whitespace-nowrap">
+                      <td className="py-2.5 px-3 font-medium text-slate-800 whitespace-nowrap">
                         {tx.category}
                       </td>
                       <td className="py-2.5 px-4 text-slate-900">
@@ -931,55 +1240,67 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                           </a>
                         )}
                       </td>
-                      <td className="py-2.5 px-4 text-slate-600 whitespace-nowrap">
+                      <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
                         <span className="inline-block text-[11px] text-slate-500">{tx.method}</span>
                       </td>
-                      <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-700 tabular-nums whitespace-nowrap">
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-700 tabular-nums whitespace-nowrap">
                         {tx.income ? `+${formatEuro(tx.income)}` : ''}
                       </td>
-                      <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-700 tabular-nums whitespace-nowrap">
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-700 tabular-nums whitespace-nowrap">
                         {tx.expense ? `-${formatEuro(tx.expense)}` : ''}
                       </td>
                       <td className="py-2.5 px-4 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1">
-                        {tx.income && tx.income > 0 && (
-                          <button
-                            onClick={() => onOpenReceiptModalForTransaction(tx)}
-                            title="Genera ricevuta di pagamento"
-                            className="p-1 text-slate-400 hover:text-emerald-700 rounded-md hover:bg-slate-100"
+                          {onUpdateTransaction && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditModal(tx)}
+                              title="Modifica questo movimento (data, importo, categoria, causale)"
+                              className="p-1 text-slate-500 hover:text-indigo-700 rounded-md hover:bg-indigo-50 transition-colors"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {tx.income && tx.income > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenReceiptModalForTransaction(tx)}
+                              title="Genera ricevuta di pagamento"
+                              className="p-1 text-slate-400 hover:text-emerald-700 rounded-md hover:bg-slate-100"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <label
+                            title="Carica fattura/ricevuta in Gestionale ASD / 02_Contabilita_e_Cassa su Drive"
+                            className="p-1 text-slate-400 hover:text-blue-600 rounded-md hover:bg-slate-100 cursor-pointer"
                           >
-                            <Printer className="w-3.5 h-3.5" />
+                            <Paperclip className="w-3.5 h-3.5" />
+                            <input
+                              type="file"
+                              onChange={(e) => handleUploadInvoiceToDrive(e, tx)}
+                              className="hidden"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (
+                                confirm(
+                                  `Confermi l'eliminazione del movimento: "${tx.description}"?`
+                                )
+                              ) {
+                                onDeleteTransaction(tx.id);
+                              }
+                            }}
+                            title="Elimina movimento"
+                            className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-slate-100"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
-                        )}
-                        <label
-                          title="Carica fattura/ricevuta in Gestionale ASD / 02_Contabilita_e_Cassa su Drive"
-                          className="p-1 text-slate-400 hover:text-blue-600 rounded-md hover:bg-slate-100 cursor-pointer"
-                        >
-                          <Paperclip className="w-3.5 h-3.5" />
-                          <input
-                            type="file"
-                            onChange={(e) => handleUploadInvoiceToDrive(e, tx)}
-                            className="hidden"
-                          />
-                        </label>
-                        <button
-                          onClick={() => {
-                            if (
-                              confirm(
-                                `Confermi l'eliminazione del movimento: "${tx.description}"?`
-                              )
-                            ) {
-                              onDeleteTransaction(tx.id);
-                            }
-                          }}
-                          title="Elimina movimento"
-                          className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-slate-100"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                        </div>
+                      </td>
+                    </tr>
                   );
                 })
               )}
@@ -989,6 +1310,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         <div className="py-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
           <span>
             Mostrati {filteredTransactions.length} di {transactions.length} movimenti
+            {activeSelectedIds.length > 0 ? ` · ${activeSelectedIds.length} selezionati` : ''}
           </span>
           <div className="flex items-center gap-4 font-mono font-medium">
             <span className="text-emerald-800">
@@ -1002,6 +1324,147 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Edit Existing Transaction Modal */}
+      {editingTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-indigo-600" />
+                <span>Modifica Movimento Cassa</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingTx(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditedTransaction} className="space-y-4 text-xs">
+              <div className="flex rounded-lg border border-slate-200 p-1 bg-slate-50">
+                <button
+                  type="button"
+                  onClick={() => setEditType('income')}
+                  className={`flex-1 py-2 rounded-md font-semibold text-center transition-all ${
+                    editType === 'income'
+                      ? 'bg-emerald-700 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Entrata (+)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditType('expense')}
+                  className={`flex-1 py-2 rounded-md font-semibold text-center transition-all ${
+                    editType === 'expense'
+                      ? 'bg-rose-700 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Uscita / Spesa (-)
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Data Movimento *
+                  </label>
+                  <input
+                    id="input-cashflow-edit-date"
+                    type="date"
+                    required
+                    value={editDate}
+                    onChange={(e) => setEditDate(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">Importo (€) *</label>
+                  <input
+                    id="input-cashflow-edit-amount"
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">Categoria *</label>
+                  <select
+                    value={editCategory}
+                    onChange={(e) => setEditCategory(e.target.value as CashCategory)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    {categories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Canale Pagamento *
+                  </label>
+                  <select
+                    value={editMethod}
+                    onChange={(e) => setEditMethod(e.target.value as PaymentMethod)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    {methods.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-medium mb-1">
+                  Descrizione / Causale *
+                </label>
+                <input
+                  id="input-cashflow-edit-description"
+                  type="text"
+                  required
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingTx(null)}
+                  className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg font-medium"
+                >
+                  Annulla
+                </button>
+                <button
+                  id="btn-cashflow-save-edit"
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-700 hover:bg-indigo-800 text-white rounded-lg font-semibold shadow-xs"
+                >
+                  Salva Modifiche
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Edit Initial Fund Modal */}
       {isFundModalOpen && (

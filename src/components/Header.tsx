@@ -19,6 +19,8 @@ import {
   FolderOpen,
   Save,
   Calendar,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 import { NavTab } from './Sidebar';
 
@@ -51,6 +53,11 @@ interface HeaderProps {
   onTogglePageGuide?: () => void;
   onOpenFullManual?: () => void;
   onOpenMobileMenu?: () => void;
+  canUndo?: boolean;
+  lastUndoLabel?: string | null;
+  onUndo?: () => void;
+  canRedo?: boolean;
+  onRedo?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -80,6 +87,11 @@ export const Header: React.FC<HeaderProps> = ({
   onTogglePageGuide,
   onOpenFullManual,
   onOpenMobileMenu,
+  canUndo = false,
+  lastUndoLabel = null,
+  onUndo,
+  canRedo = false,
+  onRedo,
 }) => {
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false);
   const [isYearMenuOpen, setIsYearMenuOpen] = useState(false);
@@ -333,6 +345,51 @@ export const Header: React.FC<HeaderProps> = ({
                 aria-label="Manuale Completo"
               >
                 <BookOpen className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Global Undo / Redo Buttons */}
+        {onUndo && (
+          <div className="flex items-center">
+            <button
+              id="btn-header-undo"
+              type="button"
+              onClick={onUndo}
+              disabled={!canUndo}
+              className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold border transition-colors shadow-2xs ${
+                onRedo ? 'rounded-l-lg' : 'rounded-lg'
+              } ${
+                canUndo
+                  ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200'
+                  : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+              }`}
+              title={
+                canUndo && lastUndoLabel
+                  ? `Annulla ultima operazione: ${lastUndoLabel} (Ctrl+Z)`
+                  : 'Nessuna operazione recente da annullare'
+              }
+              aria-label="Annulla operazione"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Annulla</span>
+            </button>
+            {onRedo && (
+              <button
+                id="btn-header-redo"
+                type="button"
+                onClick={onRedo}
+                disabled={!canRedo}
+                className={`p-1.5 text-xs font-semibold border border-l-0 rounded-r-lg transition-colors ${
+                  canRedo
+                    ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200'
+                    : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'
+                }`}
+                title="Ripeti operazione annullata (Ctrl+Y)"
+                aria-label="Ripeti operazione"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>

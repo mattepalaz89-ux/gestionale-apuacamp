@@ -488,8 +488,75 @@ export default function App() {
     duplicateDetectionMode
   );
 
+  // --- Multi-Step Undo / Redo History Stack (up to 30 operations) ---
+  const [undoStack, setUndoStack] = useState<{ state: AppState; label: string }[]>([]);
+  const [redoStack, setRedoStack] = useState<{ state: AppState; label: string }[]>([]);
+
+  const recordUndoSnapshot = useCallback((label: string, snapshotState?: AppState) => {
+    const snap = snapshotState ?? appStateRef.current;
+    setUndoStack((prev) => [{ state: snap, label }, ...prev].slice(0, 30));
+    setRedoStack([]);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    setUndoStack((prevUndo) => {
+      if (prevUndo.length === 0) return prevUndo;
+      const [latest, ...rest] = prevUndo;
+      const currentSnap = appStateRef.current;
+      setRedoStack((prevRedo) => [{ state: currentSnap, label: latest.label }, ...prevRedo].slice(0, 30));
+      setTargetDuplicateTxIds([]);
+      setAppState(latest.state);
+      return rest;
+    });
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    setRedoStack((prevRedo) => {
+      if (prevRedo.length === 0) return prevRedo;
+      const [latest, ...rest] = prevRedo;
+      const currentSnap = appStateRef.current;
+      setUndoStack((prevUndo) => [{ state: currentSnap, label: latest.label }, ...prevUndo].slice(0, 30));
+      setTargetDuplicateTxIds([]);
+      setAppState(latest.state);
+      return rest;
+    });
+  }, []);
+
+  // Global keyboard shortcuts: Ctrl+Z / Cmd+Z for Undo, Ctrl+Y / Cmd+Shift+Z for Redo
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        if (undoStack.length > 0) {
+          e.preventDefault();
+          handleUndo();
+        }
+      } else if (
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
+      ) {
+        if (redoStack.length > 0) {
+          e.preventDefault();
+          handleRedo();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [undoStack.length, redoStack.length, handleUndo, handleRedo]);
+
   // --- Handlers for Cash Transactions & Funds ---
   const handleAddTransaction = (newTx: Omit<CashTransaction, 'id'>) => {
+    recordUndoSnapshot('Aggiunta movimento cassa');
     const id = `tx-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const tx: CashTransaction = { id, ...newTx };
     // Test ONLY this newly added movement against existing movements
@@ -516,6 +583,7 @@ export default function App() {
   };
 
   const handleUpdateTransaction = (updatedTx: CashTransaction) => {
+    recordUndoSnapshot('Modifica movimento cassa');
     setAppState((prev) => ({
       ...prev,
       transactions: prev.transactions.map((t) => (t.id === updatedTx.id ? updatedTx : t)),
@@ -523,6 +591,7 @@ export default function App() {
   };
 
   const handleDeleteTransaction = (id: string) => {
+    recordUndoSnapshot('Eliminazione movimento cassa');
     setTargetDuplicateTxIds((prev) => prev.filter((item) => item !== id));
     setAppState((prev) => ({
       ...prev,
@@ -531,6 +600,8 @@ export default function App() {
   };
 
   const handleDeleteMultipleTransactions = (ids: string[]) => {
+    if (ids.length === 0) return;
+    recordUndoSnapshot(`Eliminazione ${ids.length} movimenti`);
     const idSet = new Set(ids);
     setTargetDuplicateTxIds((prev) => prev.filter((item) => !idSet.has(item)));
     setAppState((prev) => ({
@@ -540,6 +611,7 @@ export default function App() {
   };
 
   const handleLoadSampleDuplicates = () => {
+    recordUndoSnapshot('Simulazione duplicati');
     const sampleTxs = createSampleDuplicateTransactions(appState.profile.activeYear);
     setTargetDuplicateTxIds(sampleTxs.map((t) => t.id));
     setAppState((prev) => ({
@@ -562,6 +634,11 @@ export default function App() {
     mode: 'append' | 'replace',
     newFunds?: { initialFund: number; initialFundBank: number; initialFundCash: number }
   ) => {
+    recordUndoSnapshot(
+      txs.length === 0 && mode === 'replace'
+        ? 'Azzeramento cassa'
+        : `Importazione ${txs.length} movimenti`
+    );
     const importedIds = txs.map((t) => t.id);
     // Run duplicate check once on the newly imported dataset
     setTargetDuplicateTxIds(importedIds);
@@ -598,6 +675,7 @@ export default function App() {
     initialFundBank: number;
     initialFundCash: number;
   }) => {
+    recordUndoSnapshot('Modifica fondo iniziale');
     setAppState((prev) => ({
       ...prev,
       ...funds,
@@ -609,6 +687,7 @@ export default function App() {
     newPlan: Omit<RecurringExpensePlan, 'id'>,
     autoGenerateCurrentYearTransactions: boolean
   ) => {
+    recordUndoSnapshot('Aggiunta spesa ricorrente');
     const planId = `rec-${Date.now()}`;
     const fullPlan: RecurringExpensePlan = { id: planId, ...newPlan };
 
@@ -640,6 +719,7 @@ export default function App() {
   };
 
   const handleDeleteRecurringExpense = (id: string) => {
+    recordUndoSnapshot('Rimozione spesa ricorrente');
     setAppState((prev) => ({
       ...prev,
       recurringExpenses: (prev.recurringExpenses || []).filter((p) => p.id !== id),
@@ -649,6 +729,7 @@ export default function App() {
   const handleRegisterRecurringOccurrences = (
     newTransactions: Omit<CashTransaction, 'id'>[]
   ) => {
+    recordUndoSnapshot(`Contabilizzazione ${newTransactions.length} rate`);
     const now = Date.now();
     const txsWithId: CashTransaction[] = newTransactions.map((tx, idx) => ({
       id: `tx-rec-${now}-${idx}`,
@@ -662,6 +743,7 @@ export default function App() {
 
   // --- Handlers for Members ---
   const handleAddMember = (newMember: Omit<Member, 'id'>): Member => {
+    recordUndoSnapshot('Aggiunta socio');
     const id = `m-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const member: Member = { id, ...newMember };
     setAppState((prev) => ({
@@ -672,6 +754,7 @@ export default function App() {
   };
 
   const handleImportMembers = (imported: Member[], mode: 'append' | 'replace') => {
+    recordUndoSnapshot(`Importazione ${imported.length} soci`);
     setAppState((prev) => ({
       ...prev,
       members: mode === 'replace' ? imported : [...imported, ...prev.members],
@@ -679,6 +762,7 @@ export default function App() {
   };
 
   const handleUpdateMember = (updated: Member) => {
+    recordUndoSnapshot('Modifica socio');
     setAppState((prev) => ({
       ...prev,
       members: prev.members.map((m) => (m.id === updated.id ? updated : m)),
@@ -686,6 +770,7 @@ export default function App() {
   };
 
   const handleDeleteMember = (id: string) => {
+    recordUndoSnapshot('Eliminazione socio');
     setAppState((prev) => ({
       ...prev,
       members: prev.members.filter((m) => m.id !== id),
@@ -694,6 +779,7 @@ export default function App() {
 
   // --- Handlers for Events & Bookings ---
   const handleAddEvent = (newEv: Omit<EventItem, 'id'>) => {
+    recordUndoSnapshot('Nuovo evento');
     const id = `ev-${Date.now()}`;
     setAppState((prev) => ({
       ...prev,
@@ -702,6 +788,7 @@ export default function App() {
   };
 
   const handleUpdateEvent = (updatedEv: EventItem) => {
+    recordUndoSnapshot('Modifica evento');
     setAppState((prev) => ({
       ...prev,
       events: prev.events.map((e) => (e.id === updatedEv.id ? updatedEv : e)),
@@ -712,6 +799,7 @@ export default function App() {
   };
 
   const handleDeleteEvent = (eventId: string) => {
+    recordUndoSnapshot('Eliminazione evento');
     setAppState((prev) => ({
       ...prev,
       events: prev.events.filter((e) => e.id !== eventId),
@@ -720,6 +808,7 @@ export default function App() {
   };
 
   const handleAddBooking = (newBooking: Omit<EventBooking, 'id'>) => {
+    recordUndoSnapshot('Nuova iscrizione evento');
     const id = `bk-${Date.now()}`;
     const booking: EventBooking = { id, ...newBooking };
     setAppState((prev) => ({
@@ -729,6 +818,7 @@ export default function App() {
   };
 
   const handleUpdateBooking = (updated: EventBooking) => {
+    recordUndoSnapshot('Modifica iscrizione evento');
     setAppState((prev) => ({
       ...prev,
       bookings: prev.bookings.map((b) => (b.id === updated.id ? updated : b)),
@@ -736,6 +826,7 @@ export default function App() {
   };
 
   const handleDeleteBooking = (bookingId: string) => {
+    recordUndoSnapshot('Eliminazione iscrizione evento');
     setAppState((prev) => ({
       ...prev,
       bookings: prev.bookings.filter((b) => b.id !== bookingId),
@@ -744,6 +835,7 @@ export default function App() {
 
   // --- Handlers for Grants (Bandi & Progetti) ---
   const handleAddGrant = (newGrant: Omit<GrantItem, 'id'>) => {
+    recordUndoSnapshot('Nuovo bando');
     const id = `gr-${Date.now()}`;
     setAppState((prev) => ({
       ...prev,
@@ -752,6 +844,7 @@ export default function App() {
   };
 
   const handleUpdateGrant = (updatedGrant: GrantItem) => {
+    recordUndoSnapshot('Modifica bando');
     setAppState((prev) => ({
       ...prev,
       grants: prev.grants.map((g) => (g.id === updatedGrant.id ? updatedGrant : g)),
@@ -759,6 +852,7 @@ export default function App() {
   };
 
   const handleDeleteGrant = (grantId: string) => {
+    recordUndoSnapshot('Eliminazione bando');
     setAppState((prev) => ({
       ...prev,
       grants: prev.grants.filter((g) => g.id !== grantId),
@@ -767,6 +861,7 @@ export default function App() {
 
   // --- Handlers for Gadgets & Gadget Orders ---
   const handleAddGadgetItem = (item: Omit<GadgetItem, 'id'>) => {
+    recordUndoSnapshot('Nuovo articolo gadget');
     const id = `gd-${Date.now()}`;
     setAppState((prev) => ({
       ...prev,
@@ -778,6 +873,7 @@ export default function App() {
     order: Omit<GadgetOrder, 'id'>,
     registerInCashFlow: boolean
   ) => {
+    recordUndoSnapshot('Nuova prenotazione gadget');
     const id = `go-${Date.now()}`;
     const fullOrder: GadgetOrder = { id, ...order };
 
@@ -807,6 +903,7 @@ export default function App() {
   };
 
   const handleUpdateGadgetOrder = (updated: GadgetOrder) => {
+    recordUndoSnapshot('Modifica ordine gadget');
     setAppState((prev) => ({
       ...prev,
       gadgetOrders: prev.gadgetOrders.map((o) => (o.id === updated.id ? updated : o)),
@@ -814,6 +911,7 @@ export default function App() {
   };
 
   const handleDeleteGadgetOrder = (id: string) => {
+    recordUndoSnapshot('Eliminazione ordine gadget');
     setAppState((prev) => ({
       ...prev,
       gadgetOrders: prev.gadgetOrders.filter((o) => o.id !== id),
@@ -821,6 +919,7 @@ export default function App() {
   };
 
   const handleImportGadgetOrders = (orders: GadgetOrder[]) => {
+    recordUndoSnapshot(`Importazione ${orders.length} ordini gadget`);
     setAppState((prev) => ({
       ...prev,
       gadgetOrders: [...orders, ...prev.gadgetOrders],
@@ -829,6 +928,7 @@ export default function App() {
 
   // --- Handlers for Governance Roles & Assemblies ---
   const handleAddRole = (role: Omit<AssociationRole, 'id'>) => {
+    recordUndoSnapshot('Nuova carica sociale');
     const id = `role-${Date.now()}`;
     setAppState((prev) => ({
       ...prev,
@@ -837,6 +937,7 @@ export default function App() {
   };
 
   const handleUpdateRole = (updated: AssociationRole) => {
+    recordUndoSnapshot('Modifica carica sociale');
     setAppState((prev) => ({
       ...prev,
       roles: prev.roles.map((r) => (r.id === updated.id ? updated : r)),
@@ -844,6 +945,7 @@ export default function App() {
   };
 
   const handleDeleteRole = (id: string) => {
+    recordUndoSnapshot('Eliminazione carica sociale');
     setAppState((prev) => ({
       ...prev,
       roles: prev.roles.filter((r) => r.id !== id),
@@ -851,6 +953,7 @@ export default function App() {
   };
 
   const handleAddAssembly = (asm: Omit<AssemblyMeeting, 'id'>) => {
+    recordUndoSnapshot('Nuova assemblea');
     const id = `asm-${Date.now()}`;
     setAppState((prev) => ({
       ...prev,
@@ -862,6 +965,7 @@ export default function App() {
   };
 
   const handleUpdateAssembly = (updated: AssemblyMeeting) => {
+    recordUndoSnapshot('Modifica assemblea');
     setAppState((prev) => ({
       ...prev,
       assemblies: prev.assemblies.map((a) => (a.id === updated.id ? updated : a)),
@@ -870,6 +974,7 @@ export default function App() {
 
   // --- Handlers for Staff ---
   const handleAddStaffMember = (newStaff: StaffMember) => {
+    recordUndoSnapshot('Nuovo collaboratore staff');
     setAppState((prev) => ({
       ...prev,
       staff: [...prev.staff, newStaff],
@@ -882,16 +987,19 @@ export default function App() {
   };
 
   const handleArchiveFiscalYear = (targetNewYear: number): ArchivedFiscalYear | null => {
+    recordUndoSnapshot(`Archiviazione anno ${appState.profile.activeYear}`);
     const { nextState, archivedRecord } = archiveFiscalYearState(appState, targetNewYear);
     setAppState(nextState);
     return archivedRecord || null;
   };
 
   const handleRestoreState = (restored: AppState) => {
+    recordUndoSnapshot('Ripristino backup');
     setAppState(restored);
   };
 
   const handleResetToDefaults = () => {
+    recordUndoSnapshot('Reset gestionale');
     const empty2027 = resetToEmpty2027(googleUserEmail);
     setAppState(empty2027);
   };
@@ -1006,6 +1114,11 @@ export default function App() {
           lastLocalSavedAt={lastLocalSavedAt}
           onConnectLocalFile={handleConnectLocalFile}
           onSaveLocalFile={handleSaveLocalFile}
+          canUndo={undoStack.length > 0}
+          lastUndoLabel={undoStack[0]?.label || null}
+          onUndo={handleUndo}
+          canRedo={redoStack.length > 0}
+          onRedo={handleRedo}
         />
 
         {/* View Switcher Container */}
@@ -1127,11 +1240,17 @@ export default function App() {
               onAddTransaction={handleAddTransaction}
               onUpdateTransaction={handleUpdateTransaction}
               onDeleteTransaction={handleDeleteTransaction}
+              onDeleteMultipleTransactions={handleDeleteMultipleTransactions}
               onImportTransactions={handleImportTransactions}
               onUpdateInitialFunds={handleUpdateInitialFunds}
               onUpdateProfile={handleUpdateProfile}
               onOpenReceiptModalForTransaction={openReceiptForTransaction}
               onNavigateToArchive={() => setActiveTab('backup')}
+              canUndo={undoStack.length > 0}
+              lastUndoLabel={undoStack[0]?.label || null}
+              onUndo={handleUndo}
+              canRedo={redoStack.length > 0}
+              onRedo={handleRedo}
             />
           )}
 

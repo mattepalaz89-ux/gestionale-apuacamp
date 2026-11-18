@@ -16,6 +16,9 @@ import {
 import {
   parseMembersFromRows,
   parseTransactionsFromRows,
+  normalizeTransactionDate,
+  tryParseTransactionDate,
+  excelSerialToISODate,
   isTessera365Eligible,
   calculateCardExpiryDate,
   parseMembersFromGoogleFormResponses,
@@ -73,11 +76,19 @@ import {
 } from '../types';
 
 describe('Financial & Reconciliation Engine', () => {
-  it('parses Italian and international euro strings accurately', () => {
+  it('parses Italian and international euro strings accurately without multiplying by 100 on dot decimals', () => {
     assert.equal(parseAmount('€ 1.234,56'), 1234.56);
     assert.equal(parseAmount('41.902,29'), 41902.29);
     assert.equal(parseAmount('34.769,28'), 34769.28);
     assert.equal(parseAmount(130), 130);
+    // Crucial regression tests for Excel formatted numbers ("1203.00" must be 1203, NEVER 120300)
+    assert.equal(parseAmount('1203.00'), 1203);
+    assert.equal(parseAmount('1203,00'), 1203);
+    assert.equal(parseAmount('1.203,00'), 1203);
+    assert.equal(parseAmount('1,203.00'), 1203);
+    assert.equal(parseAmount('1203.5'), 1203.5);
+    assert.equal(parseAmount('1203,5'), 1203.5);
+    assert.equal(parseAmount('20.50'), 20.5);
   });
 
   it('reconciles the exact 2026 Cassa balance of € 11,805.47', () => {
@@ -1437,5 +1448,52 @@ describe('Sortable Members, Event Discounts (Fixed € / %), Vouchers & Smart Re
       ledgerTxs.length
     );
   });
+
+  it('parses all Excel date formats (serial numbers, Italian month names with hyphens/slashes/dots, US MM/DD/YY, short DD/MM) without falling back to Jan 1st', () => {
+    // Excel serial date 46037 -> 2026-01-15
+    assert.equal(excelSerialToISODate(46037), '2026-01-15');
+    assert.equal(normalizeTransactionDate('46037', 2026), '2026-01-15');
+
+    // Italian hyphenated / slashed / dotted month names
+    assert.equal(normalizeTransactionDate('15-gen-26', 2026), '2026-01-15');
+    assert.equal(normalizeTransactionDate('15-gen-2026', 2026), '2026-01-15');
+    assert.equal(normalizeTransactionDate('15/feb/26', 2026), '2026-02-15');
+    assert.equal(normalizeTransactionDate('10.mag.2026', 2026), '2026-05-10');
+    assert.equal(normalizeTransactionDate('22-set', 2026), '2026-09-22');
+    assert.equal(normalizeTransactionDate('lun 18/05/2026', 2026), '2026-05-18');
+
+    // SheetJS US formatted date (MM/DD/YY where DD > 12)
+    assert.equal(normalizeTransactionDate('03/25/26', 2026), '2026-03-25');
+
+    // Short numeric date without year
+    assert.equal(normalizeTransactionDate('14/06', 2026), '2026-06-14');
+    assert.equal(tryParseTransactionDate('testo non data', 2026), null);
+
+    // Dynamic columns, skipping TOTALE/SALDO rows, and carrying forward blank same-day dates
+    const customExcelRows = [
+      [' Titolo Foglio Cassa ASD Apuacamp 2026 ', '', '', '', '', ''],
+      ['Data Movimento', 'Causale / Descrizione', 'Voce', 'Entrate (€)', 'Uscite (€)', 'Saldo Progressivo', 'Metodo'],
+      ['15-mar-26', 'Quote Tesseramento Soci', 'Tessere', '1203.00', '', '1203.00', 'Bonifico'],
+      ['', 'Seconda tranche stesso giorno', 'Tessere', '45,50', '', '1248.50', 'Contanti'],
+      ['20.04.2026', 'Acquisto palloni e corde', 'Strumenti', '', '180.00', '1068.50', 'POS'],
+      ['TOTALE GENERALE', '', '', '1248.50', '180.00', '1068.50', ''],
+      ['SALDO FINALE', '', '', '', '', '1068.50', ''],
+    ];
+
+    const parsed = parseTransactionsFromRows(customExcelRows, 2026);
+    assert.equal(parsed.length, 3);
+    assert.equal(parsed[0].date, '2026-03-15');
+    assert.equal(parsed[0].income, 1203);
+    assert.equal(parsed[0].description, 'Quote Tesseramento Soci');
+    // Second row had blank date -> carried forward '2026-03-15' instead of '2026-01-01'!
+    assert.equal(parsed[1].date, '2026-03-15');
+    assert.equal(parsed[1].income, 45.5);
+    assert.equal(parsed[1].method, 'Contanti');
+    // Third row
+    assert.equal(parsed[2].date, '2026-04-20');
+    assert.equal(parsed[2].expense, 180);
+    assert.equal(parsed[2].category, 'Acquisto Strumenti');
+  });
 });
+
 

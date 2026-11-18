@@ -33,13 +33,70 @@ export function formatEuro(amount: number | null | undefined): string {
   }).format(amount);
 }
 
-export function parseAmount(val: string | number): number {
-  if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  if (!val) return 0;
-  // clean € and spaces, replace Italian comma with dot
-  const clean = val.replace(/€/g, '').replace(/\s+/g, '').replace(/\./g, '').replace(',', '.');
-  const num = parseFloat(clean);
-  return isNaN(num) ? 0 : num;
+export function parseAmount(val: string | number | null | undefined): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') {
+    return isNaN(val) ? 0 : Math.round(val * 100) / 100;
+  }
+
+  let s = String(val)
+    .trim()
+    .replace(/[€$£\s\u00A0]/g, '')
+    .replace(/^(EUR|euro)/i, '')
+    .trim();
+
+  if (!s) return 0;
+
+  // Handle accounting parentheses for negative numbers e.g. "(120,00)" -> "-120,00"
+  if (/^\(.*\)$/.test(s)) {
+    s = '-' + s.slice(1, -1);
+  }
+
+  // Keep only digits, '+', '-', '.', ','
+  s = s.replace(/[^0-9.,+-]/g, '');
+  if (!s || s === '-' || s === '+') return 0;
+
+  const lastComma = s.lastIndexOf(',');
+  const lastDot = s.lastIndexOf('.');
+
+  if (lastComma !== -1 && lastDot !== -1) {
+    // Both '.' and ',' are present: whichever comes last is the decimal separator
+    if (lastComma > lastDot) {
+      // Italian / European format: "1.203,50" -> "1203.50"
+      s = s.replace(/\./g, '').replace(/,/g, '.');
+    } else {
+      // English / SheetJS format: "1,203.50" -> "1203.50"
+      s = s.replace(/,/g, '');
+    }
+  } else if (lastComma !== -1) {
+    const commaCount = (s.match(/,/g) || []).length;
+    if (commaCount > 1) {
+      // Multiple commas e.g. "1,200,000" -> thousands separators
+      s = s.replace(/,/g, '');
+    } else {
+      // Single comma e.g. "1203,00" or "20,5" -> Italian decimal separator
+      s = s.replace(',', '.');
+    }
+  } else if (lastDot !== -1) {
+    const dotCount = (s.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      // Multiple dots e.g. "1.200.000" -> thousands separators
+      s = s.replace(/\./g, '');
+    } else {
+      // Single dot:
+      // - "1203.00", "1203.5", "20.50" -> 1 or 2 digits after dot -> decimal point!
+      // - "1.200" (1-3 digits before dot, exactly 3 digits after dot, not starting with 0) -> Italian thousands separator
+      const parts = s.split('.');
+      const intPart = parts[0].replace(/^[+-]/, '');
+      const fracPart = parts[1] || '';
+      if (fracPart.length === 3 && intPart.length >= 1 && intPart.length <= 3 && intPart !== '0') {
+        s = s.replace('.', '');
+      }
+    }
+  }
+
+  const num = parseFloat(s);
+  return isNaN(num) ? 0 : Math.round(num * 100) / 100;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;

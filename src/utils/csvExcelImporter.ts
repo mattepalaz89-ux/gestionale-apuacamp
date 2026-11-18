@@ -103,33 +103,167 @@ export function calculateCardExpiryDate(
   return `31/12/${parsed.year}`;
 }
 
+const MONTH_NAME_MAP: Record<string, string> = {
+  ...ITALIAN_MONTHS_MAP,
+  jan: '01',
+  january: '01',
+  february: '02',
+  march: '03',
+  april: '04',
+  may: '05',
+  jun: '06',
+  june: '06',
+  jul: '07',
+  july: '07',
+  aug: '08',
+  august: '08',
+  sep: '09',
+  sept: '09',
+  september: '09',
+  oct: '10',
+  october: '10',
+  november: '11',
+  dec: '12',
+  december: '12',
+};
+
+function resolveMonthCode(rawMonth: string): string | null {
+  const clean = rawMonth.toLowerCase().replace(/[^a-z]/g, '');
+  if (!clean) return null;
+  return MONTH_NAME_MAP[clean] || MONTH_NAME_MAP[clean.slice(0, 3)] || null;
+}
+
+function normalizeTwoOrFourDigitYear(rawYear: string | number | undefined, fallbackYear: number): number {
+  if (rawYear === undefined || rawYear === null || String(rawYear).trim() === '') {
+    return fallbackYear;
+  }
+  const y = parseInt(String(rawYear).trim(), 10);
+  if (isNaN(y)) return fallbackYear;
+  if (y < 100) return 2000 + y;
+  return y;
+}
+
+function formatYMD(year: number, month: number, day: number): string | null {
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1990 || year > 2100) {
+    return null;
+  }
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Converts an Excel serial date number (e.g. 46037) to "YYYY-MM-DD"
+ */
+export function excelSerialToISODate(serial: number): string | null {
+  if (!Number.isFinite(serial) || serial < 30000 || serial > 65000) return null;
+  const utcDays = Math.floor(serial - 25569);
+  const utcMs = utcDays * 86400 * 1000;
+  const d = new Date(utcMs);
+  if (isNaN(d.getTime())) return null;
+  return formatYMD(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+}
+
+/**
+ * Attempts to parse any Italian/International/Excel date representation into "YYYY-MM-DD".
+ * Returns null if the input does not contain a valid date.
+ */
+export function tryParseTransactionDate(
+  raw: string | number | Date | undefined | null,
+  fallbackYear: number = 2027
+): string | null {
+  if (raw === null || raw === undefined) return null;
+
+  if (raw instanceof Date) {
+    if (isNaN(raw.getTime())) return null;
+    return formatYMD(raw.getFullYear(), raw.getMonth() + 1, raw.getDate());
+  }
+
+  if (typeof raw === 'number') {
+    return excelSerialToISODate(raw);
+  }
+
+  let trimmed = String(raw).trim();
+  if (!trimmed) return null;
+
+  // 1. Check if it's an Excel serial number stored as string (e.g. "46037" or "46037.0")
+  if (/^\d{5}(?:\.\d+)?$/.test(trimmed)) {
+    const serial = parseFloat(trimmed);
+    const isoFromSerial = excelSerialToISODate(serial);
+    if (isoFromSerial) return isoFromSerial;
+  }
+
+  // Strip optional leading Italian/English day-of-week (e.g. "lun 15/03/2026", "martedì 12 mag 2026")
+  trimmed = trimmed.replace(
+    /^(?:lun(?:ed[iì])?|mar(?:ted[iì])?|mer(?:coled[iì])?|gio(?:ved[iì])?|ven(?:erd[iì])?|sab(?:ato)?|dom(?:enica)?|mon|tue|wed|thu|fri|sat|sun)[,.\s]+(?=\d)/i,
+    ''
+  );
+
+  // 2. ISO or YYYY/MM/DD or YYYY.MM.DD (with optional timestamp)
+  const isoMatch = trimmed.match(/^(\d{4})[\/\-.\s](\d{1,2})[\/\-.\s](\d{1,2})(?:[T\s].*)?$/);
+  if (isoMatch) {
+    const y = parseInt(isoMatch[1], 10);
+    const m = parseInt(isoMatch[2], 10);
+    const d = parseInt(isoMatch[3], 10);
+    return formatYMD(y, m, d);
+  }
+
+  // 3. Numeric DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, DD/MM/YY (or US MM/DD/YY from SheetJS)
+  const numFullMatch = trimmed.match(
+    /^(\d{1,2})[\/\\\-.\s](\d{1,2})[\/\\\-.\s](\d{2,4})(?:\s+\d{1,2}[:.]\d{2}.*)?$/
+  );
+  if (numFullMatch) {
+    const p1 = parseInt(numFullMatch[1], 10);
+    const p2 = parseInt(numFullMatch[2], 10);
+    const y = normalizeTwoOrFourDigitYear(numFullMatch[3], fallbackYear);
+
+    // If p2 > 12 and p1 <= 12, it was formatted in US MM/DD/YYYY (e.g. "03/15/26" by SheetJS)
+    if (p2 > 12 && p1 >= 1 && p1 <= 12) {
+      return formatYMD(y, p1, p2);
+    }
+    return formatYMD(y, p2, p1);
+  }
+
+  // 4. Day + Month Name + optional Year (with spaces, hyphens, slashes, dots: "15-gen-26", "15/gen/2026", "15 gen", "15.mag.2026")
+  const dayMonthTextMatch = trimmed.match(
+    /^(\d{1,2})(?:°|º)?[\s\/\\\-.,_]+([a-zA-Zàèéìòù]+)(?:[\s\/\\\-.,_]+(\d{2,4}))?$/
+  );
+  if (dayMonthTextMatch) {
+    const d = parseInt(dayMonthTextMatch[1], 10);
+    const mCode = resolveMonthCode(dayMonthTextMatch[2]);
+    if (mCode) {
+      const y = normalizeTwoOrFourDigitYear(dayMonthTextMatch[3], fallbackYear);
+      return formatYMD(y, parseInt(mCode, 10), d);
+    }
+  }
+
+  // 5. Month Name + Day + optional Year (e.g. "gen 15 2026", "Jan 15, 2026", "marzo 15")
+  const monthDayTextMatch = trimmed.match(
+    /^([a-zA-Zàèéìòù]+)[\s\/\\\-.,_]+(\d{1,2})(?:°|º)?(?:[\s\/\\\-.,_]+(\d{2,4}))?$/
+  );
+  if (monthDayTextMatch) {
+    const mCode = resolveMonthCode(monthDayTextMatch[1]);
+    const d = parseInt(monthDayTextMatch[2], 10);
+    if (mCode) {
+      const y = normalizeTwoOrFourDigitYear(monthDayTextMatch[3], fallbackYear);
+      return formatYMD(y, parseInt(mCode, 10), d);
+    }
+  }
+
+  // 6. Short numeric DD/MM or DD-MM or DD.MM without year (uses fallbackYear)
+  const shortNumMatch = trimmed.match(/^(\d{1,2})[\/\\\-.](\d{1,2})$/);
+  if (shortNumMatch) {
+    const p1 = parseInt(shortNumMatch[1], 10);
+    const p2 = parseInt(shortNumMatch[2], 10);
+    if (p2 > 12 && p1 >= 1 && p1 <= 12) {
+      return formatYMD(fallbackYear, p1, p2);
+    }
+    return formatYMD(fallbackYear, p2, p1);
+  }
+
+  return null;
+}
+
 export function normalizeTransactionDate(raw: string, fallbackYear: number = 2027): string {
-  if (!raw) return `${fallbackYear}-01-01`;
-  const trimmed = String(raw).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
-
-  const slashMatch = trimmed.match(/^(\d{1,2})[\/\\-](\d{1,2})[\/\\-](\d{2,4})$/);
-  if (slashMatch) {
-    const d = slashMatch[1].padStart(2, '0');
-    const m = slashMatch[2].padStart(2, '0');
-    let y = slashMatch[3];
-    if (y.length === 2) y = '20' + y;
-    return `${y}-${m}-${d}`;
-  }
-
-  const textMatch = trimmed
-    .toLowerCase()
-    .match(/^(\d{1,2})\s+([a-z]+)(?:[\/\s-](\d{2,4}))?/);
-  if (textMatch) {
-    const d = textMatch[1].padStart(2, '0');
-    const mName = textMatch[2];
-    const m = ITALIAN_MONTHS_MAP[mName] || ITALIAN_MONTHS_MAP[mName.slice(0, 3)] || '01';
-    let y = textMatch[3] ? textMatch[3] : String(fallbackYear);
-    if (y.length === 2) y = '20' + y;
-    return `${y}-${m}-${d}`;
-  }
-
-  return `${fallbackYear}-01-01`;
+  return tryParseTransactionDate(raw, fallbackYear) || `${fallbackYear}-01-01`;
 }
 
 export function normalizeBirthOrExpiryDate(raw: string): string {
@@ -156,41 +290,158 @@ export function normalizeAgeGroup(raw: string): AgeGroup {
 
 export function normalizeCashCategory(raw: string): CashCategory {
   const lower = (raw || '').toLowerCase().trim();
-  if (lower.includes('summer')) return 'SummerCamp';
-  if (lower.includes('evento')) return 'Evento';
+  if (lower.includes('summer') || lower.includes('campo estivo') || lower.includes('campi estivi'))
+    return 'SummerCamp';
+  if (lower.includes('evento') || lower.includes('rifugio') || lower.includes('escursion'))
+    return 'Evento';
   if (lower.includes('selva')) return 'Selva';
-  if (lower.includes('tesser')) return 'Tessere';
-  if (lower.includes('staff')) return 'Staff';
-  if (lower.includes('tasse') || lower.includes('formalit')) return 'Tasse e Formalità';
-  if (lower.includes('servizi')) return 'Servizi esterni';
-  if (lower.includes('strumenti')) return 'Acquisto Strumenti';
-  if (lower.includes('gadget')) return 'Gadget';
-  if (lower.includes('marketing')) return 'Marketing';
-  if (lower.includes('bandi') || lower.includes('fondi')) return 'Bandi e Fondi Pubbl';
-  if (lower.includes('donazion')) return 'Donazioni enti';
+  if (lower.includes('tesser') || lower.includes('quota associativa') || lower.includes('usacli') || lower.includes('acli'))
+    return 'Tessere';
+  if (lower.includes('staff') || lower.includes('compens') || lower.includes('collaborator') || lower.includes('educator'))
+    return 'Staff';
+  if (lower.includes('tasse') || lower.includes('formalit') || lower.includes('impost') || lower.includes('bollo') || lower.includes('commission'))
+    return 'Tasse e Formalità';
+  if (lower.includes('servizi') || lower.includes('assicurazion') || lower.includes('utenze') || lower.includes('affitt'))
+    return 'Servizi esterni';
+  if (lower.includes('strumenti') || lower.includes('attrezzatur') || lower.includes('material'))
+    return 'Acquisto Strumenti';
+  if (lower.includes('gadget') || lower.includes('magliett') || lower.includes('abbigliament'))
+    return 'Gadget';
+  if (lower.includes('marketing') || lower.includes('pubblicit') || lower.includes(' volant') || lower.includes('social'))
+    return 'Marketing';
+  if (lower.includes('bandi') || lower.includes('fondi') || lower.includes('contribut'))
+    return 'Bandi e Fondi Pubbl';
+  if (lower.includes('donazion') || lower.includes('erogazion') || lower.includes('liberal'))
+    return 'Donazioni enti';
   return 'Altro';
 }
 
 export function normalizePaymentMethod(raw: string): PaymentMethod {
   const lower = (raw || '').toLowerCase().trim();
-  if (lower.includes('contanti')) return 'Contanti';
+  if (lower.includes('contant') || lower.includes('cash') || lower === 'cassa') return 'Contanti';
   if (lower.includes('pos')) return 'POS';
-  if (lower.includes('bancomat')) return 'Bancomat';
+  if (lower.includes('bancomat') || lower.includes('carta')) return 'Bancomat';
   if (lower.includes('paypal')) return 'Paypal';
-  if (lower.includes('online')) return 'Pagam Online';
+  if (lower.includes('online') || lower.includes('stripe') || lower.includes('satispay'))
+    return 'Pagam Online';
   return 'Bonifico';
 }
 
 /**
- * Reads an uploaded File (.xlsx, .xls, .csv) and converts it to a 2D array of strings
+ * Extracts a 2D array of string cells from a SheetJS worksheet while preserving:
+ * - Exact ISO dates ("YYYY-MM-DD") for Excel date cells (avoiding US MM/DD/YY formatting bugs)
+ * - Exact numeric values (e.g. "1203" or "1203.5") for Excel numeric cells (avoiding ".00" or thousand separator bugs)
+ */
+function extractCleanRowsFromWorksheet(sheet: XLSX.WorkSheet): string[][] {
+  const ref = sheet['!ref'];
+  if (!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const maxRow = Math.min(range.e.r, range.s.r + 5000);
+  const maxCol = Math.min(range.e.c, range.s.c + 40);
+
+  const rows: string[][] = [];
+  for (let r = range.s.r; r <= maxRow; r++) {
+    const rowCells: string[] = [];
+    let hasNonEmpty = false;
+    for (let c = range.s.c; c <= maxCol; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = sheet[addr] as XLSX.CellObject | undefined;
+      if (!cell || cell.v === undefined || cell.v === null) {
+        rowCells.push('');
+        continue;
+      }
+
+      let valStr = '';
+      if (cell.t === 'd' && cell.v instanceof Date) {
+        valStr =
+          formatYMD(cell.v.getFullYear(), cell.v.getMonth() + 1, cell.v.getDate()) ||
+          String(cell.w ?? '').trim();
+      } else if (cell.t === 'n' && typeof cell.v === 'number') {
+        const formattedText = String(cell.w ?? '').trim();
+        // Check if this numeric cell is formatted as an Excel date
+        const looksLikeFormattedDate =
+          cell.v >= 30000 &&
+          cell.v <= 65000 &&
+          (/\d{1,4}[\/\-.\s]\d{1,2}[\/\-.\s]\d{1,4}/.test(formattedText) ||
+            /\d{1,2}[\s\/\-._]+(?:gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic|jan|may|jun|jul|aug|sep|oct|dec)/i.test(
+              formattedText
+            ));
+
+        if (looksLikeFormattedDate) {
+          valStr = excelSerialToISODate(cell.v) || formattedText;
+        } else {
+          // Pure numeric value: keep exact number without US thousand commas or ".00" padding
+          const rounded = Math.round(cell.v * 100) / 100;
+          valStr = String(rounded);
+        }
+      } else {
+        valStr = String(cell.w ?? cell.v ?? '').trim();
+      }
+
+      if (valStr !== '') hasNonEmpty = true;
+      rowCells.push(valStr);
+    }
+    if (hasNonEmpty) {
+      rows.push(rowCells);
+    }
+  }
+  return rows;
+}
+
+/**
+ * Reads an uploaded File (.xlsx, .xls, .csv) and converts it to a 2D array of strings.
+ * Automatically picks the best worksheet if the workbook has multiple tabs (e.g. skips "Riepilogo_Bilancio" and picks "Libro_Cassa").
  */
 export async function readUploadedSpreadsheetRows(file: File): Promise<string[][]> {
   const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: 'array', raw: false });
-  const firstSheetName = workbook.SheetNames[0];
-  const sheet = workbook.Sheets[firstSheetName];
-  const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-  return rows.map((r) => r.map((cell) => String(cell ?? '').trim()));
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, cellNF: true });
+  if (!workbook.SheetNames || workbook.SheetNames.length === 0) return [];
+
+  // Choose the best sheet if there are multiple tabs
+  let chosenSheetName = workbook.SheetNames[0];
+  if (workbook.SheetNames.length > 1) {
+    const preferredByName = workbook.SheetNames.find((name) => {
+      const lower = name.toLowerCase();
+      if (lower.includes('riepilogo')) return false;
+      return (
+        lower.includes('libro_cassa') ||
+        lower.includes('libro cassa') ||
+        lower.includes('flusso') ||
+        lower.includes('movimenti') ||
+        lower.includes('prima nota') ||
+        lower.includes('cassa') ||
+        lower.includes('soci') ||
+        lower.includes('anagrafica')
+      );
+    });
+
+    if (preferredByName) {
+      chosenSheetName = preferredByName;
+    } else {
+      // Fallback: inspect first 15 rows of each sheet for transaction or member headers
+      for (const name of workbook.SheetNames) {
+        if (name.toLowerCase().includes('riepilogo')) continue;
+        const candidateRows = extractCleanRowsFromWorksheet(workbook.Sheets[name]);
+        const headText = candidateRows
+          .slice(0, 15)
+          .map((r) => r.join(' ').toLowerCase())
+          .join(' ');
+        if (
+          (headText.includes('data') &&
+            (headText.includes('entrat') ||
+              headText.includes('uscit') ||
+              headText.includes('importo'))) ||
+          (headText.includes('nome') && headText.includes('genitore'))
+        ) {
+          chosenSheetName = name;
+          break;
+        }
+      }
+    }
+  }
+
+  const sheet = workbook.Sheets[chosenSheetName];
+  return extractCleanRowsFromWorksheet(sheet);
 }
 
 /**
@@ -466,7 +717,8 @@ export function parseMembersFromGoogleFormResponses(
 
 
 /**
- * Parses a 2D array of rows into CashTransaction[]
+ * Parses a 2D array of rows into CashTransaction[] with dynamic column detection,
+ * flexible date parsing, summary-row filtering, and same-day date carry-forward.
  */
 export function parseTransactionsFromRows(
   rows: string[][],
@@ -474,39 +726,216 @@ export function parseTransactionsFromRows(
 ): CashTransaction[] {
   if (!rows || rows.length === 0) return [];
 
-  let headerRowIdx = 0;
-  for (let i = 0; i < Math.min(10, rows.length); i++) {
-    const joined = rows[i].join(' ').toLowerCase();
-    if (joined.includes('data') && (joined.includes('entrata') || joined.includes('uscita'))) {
+  let headerRowIdx = -1;
+  for (let i = 0; i < Math.min(25, rows.length); i++) {
+    const joined = rows[i].map((c) => (c || '').toLowerCase().trim()).join(' | ');
+    const hasDate = joined.includes('data') || joined.includes('giorno');
+    const hasAmountCols =
+      joined.includes('entrat') ||
+      joined.includes('uscit') ||
+      joined.includes('incass') ||
+      joined.includes('spes') ||
+      joined.includes('importo') ||
+      joined.includes('dare') ||
+      joined.includes('avere');
+    if (hasDate && hasAmountCols) {
       headerRowIdx = i;
       break;
     }
   }
 
+  // Default column indices matching standard Apuacamp template:
+  // [0: Data, 1: Categoria, 2: Entrata, 3: Uscita, 4: Canale, 5: Dettagli/Causale]
+  let dateCol = 0;
+  let catCol = 1;
+  let incCol = 2;
+  let expCol = 3;
+  let singleAmountCol = -1;
+  let typeCol = -1;
+  let methodCol = 4;
+  let descCol = 5;
+
+  if (headerRowIdx >= 0) {
+    const headerCells = rows[headerRowIdx].map((c) => (c || '').toLowerCase().trim());
+    let foundDate = -1;
+    let foundCat = -1;
+    let foundInc = -1;
+    let foundExp = -1;
+    let foundSingleAmt = -1;
+    let foundType = -1;
+    let foundMethod = -1;
+    const foundDescCols: number[] = [];
+
+    headerCells.forEach((h, idx) => {
+      if (!h) return;
+      // Ignore progressive balance columns ("Saldo Progressivo", "Saldo Finale")
+      if (h.includes('saldo') || h.includes('progressiv') || h.includes('residuo')) {
+        return;
+      }
+      if (foundDate === -1 && (h.includes('data') || h === 'giorno')) {
+        foundDate = idx;
+      } else if (
+        foundInc === -1 &&
+        (h.includes('entrat') || h.includes('incass') || h.includes('avere') || h.includes('accredit'))
+      ) {
+        foundInc = idx;
+      } else if (
+        foundExp === -1 &&
+        (h.includes('uscit') || h.includes('spes') || h.includes('dare') || h.includes('addebit'))
+      ) {
+        foundExp = idx;
+      } else if (foundSingleAmt === -1 && (h.includes('importo') || h.includes('ammontare') || h === 'euro' || h === '€')) {
+        foundSingleAmt = idx;
+      } else if (foundType === -1 && (h === 'tipo' || h.includes('tipo mov') || h.includes('segno'))) {
+        foundType = idx;
+      } else if (
+        foundCat === -1 &&
+        (h.includes('categori') || h.includes('voce') || h.includes('ambito') || h.includes('settore'))
+      ) {
+        foundCat = idx;
+      } else if (
+        foundMethod === -1 &&
+        (h.includes('canal') ||
+          h.includes('metod') ||
+          h.includes('pagamento') ||
+          h.includes('mezzo') ||
+          h.includes('cassa/banca') ||
+          h.includes('conto'))
+      ) {
+        foundMethod = idx;
+      } else if (
+        h.includes('dettagli') ||
+        h.includes('causal') ||
+        h.includes('descrizion') ||
+        h.includes('note') ||
+        h.includes('oggetto') ||
+        h.includes('motiv') ||
+        h.includes('socio') ||
+        h.includes('beneficiario')
+      ) {
+        foundDescCols.push(idx);
+      }
+    });
+
+    if (foundDate !== -1) dateCol = foundDate;
+    if (foundCat !== -1) catCol = foundCat;
+    if (foundInc !== -1) incCol = foundInc;
+    if (foundExp !== -1) expCol = foundExp;
+    if (foundInc === -1 && foundExp === -1 && foundSingleAmt !== -1) {
+      singleAmountCol = foundSingleAmt;
+      incCol = -1;
+      expCol = -1;
+    }
+    if (foundType !== -1) typeCol = foundType;
+    if (foundMethod !== -1) methodCol = foundMethod;
+    if (foundDescCols.length > 0) descCol = foundDescCols[0];
+  } else {
+    headerRowIdx = 0;
+  }
+
   const dataRows = rows.slice(headerRowIdx + 1);
   const transactions: CashTransaction[] = [];
+  let lastValidDate = `${defaultYear}-01-01`;
 
   dataRows.forEach((row, idx) => {
-    const rawDate = (row[0] || '').trim();
-    const rawCat = (row[1] || '').trim();
-    const rawInc = (row[2] || '').trim();
-    const rawExp = (row[3] || '').trim();
-    const rawMethod = (row[4] || '').trim();
-    const rawDesc = (row[5] || '').trim();
+    if (!row || row.length === 0) return;
 
-    const inc = parseAmount(rawInc);
-    const exp = parseAmount(rawExp);
+    const nonEmptyCells = row.map((c) => (c || '').trim()).filter(Boolean);
+    if (nonEmptyCells.length === 0) return;
+
+    // Skip summary / total / balance / example rows
+    const rowLowerJoined = nonEmptyCells.join(' ').toLowerCase();
+    if (
+      rowLowerJoined.includes('cancella questa riga') ||
+      rowLowerJoined.includes('esempio quota') ||
+      /^(?:totale|totali|saldo\s+finale|saldo\s+iniziale|saldo\s+attuale|fondo\s+cassa|fondo\s+iniziale|riporto)\b/i.test(
+        nonEmptyCells[0]
+      ) ||
+      /^(?:totale|totali|saldo\s+finale|saldo\s+iniziale|fondo\s+cassa|riporto)\b/i.test(
+        nonEmptyCells[1] || ''
+      )
+    ) {
+      return;
+    }
+
+    // Parse date from dateCol; if empty or not found in dateCol, check adjacent cells or carry forward lastValidDate
+    const rawDateCell = (row[dateCol] || '').trim();
+    let parsedDate = tryParseTransactionDate(rawDateCell, defaultYear);
+    if (!parsedDate) {
+      for (let c = 0; c < Math.min(3, row.length); c++) {
+        if (c === incCol || c === expCol || c === singleAmountCol) continue;
+        const candidate = tryParseTransactionDate((row[c] || '').trim(), defaultYear);
+        if (candidate) {
+          parsedDate = candidate;
+          break;
+        }
+      }
+    }
+
+    if (parsedDate) {
+      lastValidDate = parsedDate;
+    }
+    const effectiveDate = parsedDate || lastValidDate;
+
+    // Parse amounts
+    let inc = 0;
+    let exp = 0;
+
+    if (singleAmountCol !== -1) {
+      const rawAmt = (row[singleAmountCol] || '').trim();
+      const rawType = typeCol !== -1 ? (row[typeCol] || '').toLowerCase().trim() : '';
+      const isNegative = rawAmt.startsWith('-') || rawAmt.startsWith('(');
+      const amt = parseAmount(rawAmt);
+      if (isNegative || rawType.includes('uscit') || rawType.includes('spes') || rawType === 'u' || rawType === '-') {
+        exp = amt;
+      } else {
+        inc = amt;
+      }
+    } else {
+      const rawInc = incCol >= 0 ? (row[incCol] || '').trim() : '';
+      const rawExp = expCol >= 0 ? (row[expCol] || '').trim() : '';
+      inc = parseAmount(rawInc);
+      exp = parseAmount(rawExp);
+    }
 
     if (inc === 0 && exp === 0) return;
 
+    const rawCat = catCol >= 0 && catCol < row.length ? (row[catCol] || '').trim() : '';
+    const rawMethod = methodCol >= 0 && methodCol < row.length ? (row[methodCol] || '').trim() : '';
+    const rawDesc = descCol >= 0 && descCol < row.length ? (row[descCol] || '').trim() : '';
+
+    // If description is empty, check any other text columns that weren't used for date/cat/method/amount
+    let finalDesc = rawDesc;
+    if (!finalDesc) {
+      const extraTextParts: string[] = [];
+      row.forEach((cellVal, cIdx) => {
+        const clean = (cellVal || '').trim();
+        if (!clean) return;
+        if (
+          cIdx === dateCol ||
+          cIdx === catCol ||
+          cIdx === incCol ||
+          cIdx === expCol ||
+          cIdx === singleAmountCol ||
+          cIdx === methodCol
+        ) {
+          return;
+        }
+        // Skip pure numbers
+        if (/^[+-]?[\d.,€\s]+$/.test(clean)) return;
+        extraTextParts.push(clean);
+      });
+      finalDesc = extraTextParts.join(' - ');
+    }
+
     transactions.push({
       id: `tx-imp-${Date.now()}-${idx}`,
-      date: normalizeTransactionDate(rawDate, defaultYear),
-      category: normalizeCashCategory(rawCat),
+      date: effectiveDate,
+      category: normalizeCashCategory(rawCat || finalDesc),
       income: inc > 0 ? inc : null,
       expense: exp > 0 ? exp : null,
       method: normalizePaymentMethod(rawMethod),
-      description: rawDesc || rawCat || 'Movimento importato',
+      description: finalDesc || rawCat || 'Movimento importato',
     });
   });
 

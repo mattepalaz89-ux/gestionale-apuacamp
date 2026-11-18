@@ -447,15 +447,36 @@ export const BackupView: React.FC<BackupViewProps> = ({
     setWorkspaceStatus(null);
     try {
       const meta = await getSpreadsheetMetadata(selectedSheetId);
-      const firstTab = meta.sheets[0] || 'Sheet1';
-      const rows = await readSpreadsheetSheet(selectedSheetId, firstTab);
+      let targetTab = meta.sheets[0] || 'Sheet1';
+      if (importTargetType === 'cassa' && meta.sheets.length > 1) {
+        const cashTab = meta.sheets.find((s) => {
+          const l = s.toLowerCase();
+          return (
+            !l.includes('riepilogo') &&
+            (l.includes('libro_cassa') ||
+              l.includes('libro cassa') ||
+              l.includes('flusso') ||
+              l.includes('cassa') ||
+              l.includes('movimenti'))
+          );
+        });
+        if (cashTab) targetTab = cashTab;
+      } else if (importTargetType === 'soci' && meta.sheets.length > 1) {
+        const sociTab = meta.sheets.find((s) => {
+          const l = s.toLowerCase();
+          return l.includes('soci') || l.includes('anagrafica') || l.includes('tesser');
+        });
+        if (sociTab) targetTab = sociTab;
+      }
+
+      const rows = await readSpreadsheetSheet(selectedSheetId, targetTab);
 
       if (importTargetType === 'soci') {
         const parsed = parseMembersFromRows(rows);
         onImportMembers(parsed, 'append');
         setWorkspaceStatus({
           type: 'ok',
-          text: `Importati ${parsed.length} soci dal foglio Google "${meta.title}" (${firstTab})!`,
+          text: `Importati ${parsed.length} soci dal foglio Google "${meta.title}" (${targetTab})!`,
           linkUrl: meta.spreadsheetUrl,
           linkLabel: 'Vedi Foglio Sorgente',
         });
@@ -464,7 +485,7 @@ export const BackupView: React.FC<BackupViewProps> = ({
         onImportTransactions(parsed, 'append');
         setWorkspaceStatus({
           type: 'ok',
-          text: `Importati ${parsed.length} movimenti di cassa dal foglio Google "${meta.title}"!`,
+          text: `Importati ${parsed.length} movimenti di cassa dal foglio Google "${meta.title}" (${targetTab})!`,
           linkUrl: meta.spreadsheetUrl,
           linkLabel: 'Vedi Foglio Sorgente',
         });
