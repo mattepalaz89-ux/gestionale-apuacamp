@@ -2,8 +2,6 @@ import React, { useState } from 'react';
 import {
   BookOpen,
   HelpCircle,
-  ChevronDown,
-  ChevronUp,
   Sparkles,
   HardDrive,
   CheckCircle2,

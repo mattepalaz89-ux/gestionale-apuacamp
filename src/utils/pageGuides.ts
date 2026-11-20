@@ -44,9 +44,9 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
         actionHint: 'Clicca su "Mostra tutte le scadenze dell\'anno ▾" o "+ Inserisci Scadenza Manuale".',
       },
       {
-        title: '4. Salvataggio Sicuro: Solo Google Drive o File Locale su PC (OneDrive/Dropbox)',
+        title: '4. Salvataggio Sicuro: Google Drive, File Locale su PC e Copia di Sicurezza Locale',
         description:
-          'Nessun salvataggio sulla memoria volatile del browser: lavora collegando Google Drive Live oppure un File Locale .json sul tuo PC.',
+          'Lavora collegando Google Drive Live oppure un File Locale .json sul tuo PC (OneDrive/Dropbox). Una copia locale di sicurezza viene mantenuta sul computer (IndexedDB) contro chiusure accidentali e può essere cancellata in un clic al momento del logout.',
       },
     ],
     proTips: [
@@ -54,44 +54,43 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
       'Tutti gli indicatori si aggiornano istantaneamente ogni volta che registri un pagamento in Eventi, Tessere, Gadget o Staff.',
     ],
     driveIntegrationNote:
-      'I dati sono custoditi esclusivamente su Google Drive ("Gestionale ASD / 07_Backup_Sistema") oppure nel tuo File Locale .json su PC / OneDrive / Dropbox.',
+      'I dati sono custoditi su Google Drive ("Gestionale ASD / 07_Backup_Sistema") o nel tuo File Locale .json su PC / OneDrive / Dropbox, con copia di sicurezza locale cancellabile al logout.',
   },
 
   cashflow: {
     tabId: 'cashflow',
-    title: 'Guida alla Pagina: Flusso di Cassa, Spese Ricorrenti & Contabilità',
+    title: 'Guida alla Pagina: Flusso di Cassa, Saldi Separati (Banca / PayPal / Contanti) & Contabilità',
     shortSubtitle:
-      'Libro cassa con scelta "Data di Oggi vs Data Diversa", spese ricorrenti, controllo duplicati ed export Excel.',
+      'Libro cassa con saldi separati C/C Bancario, PayPal e Contanti, Undo/Redo, spese ricorrenti, controllo duplicati ed export Excel.',
     overview:
-      "Questa pagina gestisce l'intero rendiconto economico-finanziario dell'ASD. Permette di registrare entrate e uscite scegliendo sempre se usare la Data di Oggi o una Data Diversa (reale), pianificare Spese Ricorrenti (mensili, annue o a tempo determinato), allegare fatture su Google Drive ed esportare il bilancio.",
+      "Questa pagina gestisce l'intero rendiconto economico-finanziario dell'associazione. Mantiene separati il Conto Corrente Bancario, il Conto PayPal, la Cassa Contanti ed eventuali conti personalizzati, permette di scegliere per le uscite PayPal quale strumento è stato addebitato (Conto/Carta Bancaria di default oppure Saldo PayPal), supporta Annulla/Ripeti (Undo/Redo), Spese Ricorrenti ed esportazione Excel multi-scheda.",
     features: [
       {
-        title: '1. Scelta Data Movimento: "Data di Oggi (Attuale)" o "Data Diversa (Reale)"',
+        title: '1. Saldi Separati: Conto Corrente Bancario, Conto PayPal, Contanti e Conti Personalizzati',
         description:
-          'Ogni volta che registri un movimento (in Cassa, Tessere, Eventi, Gadget o Staff), il gestionale ti chiede espressamente se registrarlo con la data odierna o con la data effettiva in cui è avvenuto il pagamento, così il libro cassa rispecchia sempre le date reali.',
-        actionHint: 'Clicca su "Aggiungi Movimento" e scegli tra "Data di Oggi" e "Data Diversa".',
+          'Le entrate su PayPal restano nel Saldo PayPal separato dal Conto Corrente Bancario. Quando registri un\'uscita pagata tramite PayPal, puoi scegliere lo strumento utilizzato dentro PayPal: di default l\'uscita viene scalata dal Conto Corrente Bancario (carta/conto collegato a PayPal), oppure puoi selezionare "Saldo PayPal" o un secondo conto personalizzato.',
+        actionHint: 'Clicca su "Aggiungi Movimento" o "Gestisci Conti / Metodi" per configurare altri conti.',
       },
       {
-        title: '2. Spese Ricorrenti (Mensili, Annue o a Durata Determinata)',
+        title: '2. Scelta Data Movimento ("Data di Oggi" vs "Data Diversa / Reale") & Annulla/Ripeti (Undo/Redo)',
         description:
-          'Configura piani di spesa ricorrente (es. affitto sede, utenze, compensi mensili, canoni annuali o rate con data di fine / numero massimo di rate) e contabilizza in un clic le rate maturate nel Libro Cassa.',
-        actionHint: 'Usa il pannello "Spese Ricorrenti" sopra la tabella dei movimenti.',
+          'Ogni volta che registri un movimento puoi scegliere tra la data odierna o la data effettiva del pagamento. Con i pulsanti Annulla (Undo) e Ripeti (Redo) puoi annullare o ripristinare in sicurezza le ultime modifiche contabili.',
+        actionHint: 'Usa i pulsanti Undo/Redo nella barra superiore o nella testata del Libro Cassa.',
       },
       {
-        title: '3. Impostazione Fondo Iniziale (Banca e Contanti) & Bilancio Excel (.xlsx)',
+        title: '3. Spese Ricorrenti (Mensili, Annue o a Durata Determinata) & Bilancio Excel (.xlsx)',
         description:
-          'Imposta la liquidità iniziale di apertura esercizio divisa tra Banca e Contanti ed esporta il bilancio multi-scheda in Excel (.xlsx) o sincronizzalo su Google Sheets.',
+          'Configura piani di spesa ricorrente (affitto, utenze, compensi periodici) e contabilizza in un clic le rate maturate. Esporta il bilancio multi-scheda in Excel (.xlsx) o sincronizzalo su Google Sheets.',
       },
       {
         title: '4. Alert Movimenti Duplicati (Entro 7 Giorni) & Giustificativi su Drive',
         description:
-          'Il gestionale rileva automaticamente eventuali movimenti doppi riferiti alla stessa persona e dello stesso importo entro 7 giorni, permettendoti di eliminarli da un popup dedicato.',
-        actionHint: 'Passa il mouse sulle icone compatte della barra strumenti per leggere la funzione di ogni pulsante.',
+          'Il gestionale rileva automaticamente eventuali movimenti doppi riferiti alla stessa persona e dello stesso importo entro 7 giorni, permettendoti di verificarli o eliminarli da un popup dedicato.',
       },
     ],
     proTips: [
-      'I pulsanti secondari (come Modello Excel Vuoto, Esporta CSV e Azzera Cassa) sono ridotti a icone compatte con anteprima del nome al passaggio del mouse per mantenere la pagina ordinata.',
-      'I pagamenti in "Contanti" aggiornano la Cassa Contanti; "Bonifico", "POS", "Bancomat", "Paypal" e "Pagam Online" aggiornano il Conto Bancario.',
+      'Di default tutte le uscite (anche quelle passate da PayPal) vengono addebitate sul Conto Corrente Bancario, salvo che tu selezioni esplicitamente "Saldo PayPal" o un altro metodo.',
+      'I collegamenti tra movimenti, soci, eventi, collaboratori e ricevute avvengono tramite ID univoco strutturato.',
     ],
     driveIntegrationNote:
       'Salva i fogli contabili e le fatture in "Gestionale ASD / 02_Contabilita_e_Cassa" su Google Drive o nel File Locale .json su PC.',
@@ -99,39 +98,38 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   members: {
     tabId: 'members',
-    title: 'Guida alla Pagina: Anagrafica Soci, Riordino Rapido, Buoni Spesa & Modulo Firma',
+    title: 'Guida alla Pagina: Anagrafica Soci (Minori e Adulti), Buoni Spesa & Modulo Firma',
     shortSubtitle:
-      'Intestazioni cliccabili (A→Z / Z→A), gestione Buoni Spesa attività, PDF Riepilogo Dati da Firmare e invio via Gmail.',
+      'Supporto Soci Minori e Soci Adulti, intestazioni cliccabili (A→Z / Z→A), Buoni Spesa e PDF Riepilogo Dati da Firmare.',
     overview:
-      "Qui gestisci il Libro Soci completo dell'ASD: dati anagrafici del minore e del genitore, codici fiscali, allergie, bisogni speciali (BES), consensi foto/video, credito Buoni Spesa e archivio del Modulo Riepilogo Dati firmato dai genitori. L'anagrafica è coordinata in tempo reale sia con la sezione 'Tessere & Coperture' sia con la pagina 'Eventi & Iscrizioni'.",
+      "Qui gestisci il Libro Soci completo dell'associazione: supporta sia soci minorenni (con dati del genitore/tutore) sia Soci Adulti maggiorenni (spunta 'Socio Adulto' con campi genitore facoltativi), codici fiscali, allergie/BES, consensi foto/video, credito Buoni Spesa e archivio del Modulo Riepilogo Dati firmato.",
     features: [
       {
-        title: '1. Riordino Rapido Cliccando sulle Intestazioni della Tabella (A→Z / Z→A)',
+        title: '1. Soci Minorenni e Soci Adulti (Maggiorenni) & Fasce Personalizzabili',
         description:
-          'Clicca direttamente sui titoli delle colonne della tabella ("Bimbo / Socio", "Gruppo", "Genitore & Contatti", "N° Tessera / Tipo / Scadenza", "Quota & Buono"): il primo clic ordina dalla A alla Z (crescente), il secondo clic inverte l\'ordine dalla Z alla A (decrescente).',
-        actionHint: 'Clicca su qualsiasi intestazione di colonna nella tabella dei soci.',
+          'Quando iscrivi o modifichi un socio puoi spuntare "Socio Adulto (Maggiorenne — campi genitore facoltativi)". Le fasce d\'età/gruppi e le tipologie di tessera si adattano automaticamente a quelle configurate per la tua associazione.',
+        actionHint: 'Clicca su "+ Nuovo Socio" o sulla matita di modifica per scegliere tra minore e adulto.',
       },
       {
-        title: '2. Gestione Buoni Spesa per Compensare i Costi delle Attività',
+        title: '2. Riordino Rapido Cliccando sulle Intestazioni della Tabella (A→Z / Z→A)',
         description:
-          'Nella scheda di ogni socio puoi inserire e aggiornare un credito "Buono Spesa Disponibile (€)" (con relative note) da spendere in tutto o in parte per compensare il costo di eventi, campi estivi, doposcuola o altre attività. Gli sconti specifici (ISEE o coperture enti) si applicano invece direttamente nei singoli Eventi e nelle Ricevute.',
-        actionHint: 'Apri la scheda di un socio (matita) o clicca "+ Nuovo Socio" per impostare il Buono Spesa.',
+          'Clicca direttamente sui titoli delle colonne della tabella ("Bimbo / Socio", "Gruppo", "Genitore & Contatti", "N° Tessera / Tipo / Scadenza", "Quota & Buono"): il primo clic ordina dalla A alla Z, il secondo inverte dalla Z alla A.',
       },
       {
-        title: '3. Modulo Riepilogo Dati & Consensi da Firmare (PDF A4 + Invio Gmail)',
+        title: '3. Gestione Buoni Spesa & Modulo Riepilogo Dati da Firmare (PDF A4 + Gmail)',
         description:
-          'Su ogni riga trovi il pulsante "Modulo Firma": apre il documento ufficiale con tutti i dati inviati dal socio (anagrafica, contatti, allergie/farmaci/BES, consenso foto/video, privacy GDPR e riquadri per la firma autografa dei genitori). Puoi scaricarlo in PDF A4, inviarlo via Gmail con allegato al genitore affinché lo controfirmi e spuntare "Firmato OK" quando rientra in archivio.',
-        actionHint: 'Clicca sul pulsante "Modulo Firma" (o "Firmato OK") nella riga del socio.',
+          'Imposta un credito "Buono Spesa Disponibile (€)" utilizzabile negli Eventi e genera con un clic il PDF "Modulo Firma" da stampare o inviare via Gmail per raccogliere la firma privacy/consensi.',
+        actionHint: 'Clicca sul pulsante "Modulo Firma" nella riga del socio.',
       },
       {
-        title: '4. Coordinamento Automatico con Eventi, Tessere & Google Form',
+        title: '4. Matching Deterministico per Codice Fiscale con Eventi, Tessere & Google Form',
         description:
-          'Qualsiasi modifica fatta in Anagrafica aggiorna automaticamente la sezione "Tessere & Coperture" e le iscrizioni agli Eventi. Dal cassetto "Importa / Google Form & Excel ▾" puoi sincronizzare le risposte del modulo d\'iscrizione online.',
+          'L\'abbinamento tra iscrizioni eventi, risposte Google Form e soci in Anagrafica avviene prima per Codice Fiscale, poi per Nome + Data di nascita, segnalando eventuali omonimi.',
       },
     ],
     proTips: [
-      'Il badge verde "Firmato OK" accanto al pulsante del modulo ti permette di vedere a colpo d\'occhio quali famiglie hanno già riconsegnato il modulo cartaceo o digitale firmato.',
-      'Gli sconti non sono fissi in anagrafica: si inseriscono direttamente nei singoli Eventi o al momento di generare la Ricevuta.',
+      'Se la tua associazione gestisce anche soci adulti, attiva "Gestione Soci Adulti" nella Configurazione Guidata: le etichette diventeranno automaticamente "Socio / Partecipante".',
+      'Il badge verde "Modulo Firmato ✓" indica a colpo d\'occhio quali soci hanno già consegnato il modulo firmato.',
     ],
     driveIntegrationNote:
       'Il Modulo Google e il Foglio Google "Anagrafica Soci" vengono salvati in "Gestionale ASD / 01_Anagrafica_Soci_e_Tessere".',
@@ -281,34 +279,35 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   staff: {
     tabId: 'staff',
-    title: 'Guida alla Pagina: Staff, Collaboratori Sportivi & Compensi',
+    title: 'Guida alla Pagina: Staff, Collaboratori Sportivi & Soglie D.Lgs. 36/2021 (5.000 € / 15.000 €)',
     shortSubtitle:
-      'Registro compensi (D.Lgs. 36/2021) con scelta "Data di Oggi vs Data Diversa" e quietanze PDF.',
+      'Monitoraggio soglia INPS (5.000 €) e IRPEF (15.000 €), compensi percepiti presso altre ASD, distinzione compenso vs rimborso e quietanze PDF.',
     overview:
-      'Consente di monitorare i compensi erogati a guide, educatori, istruttori e collaboratori sportivi in conformità alla Riforma dello Sport (D.Lgs. 36/2021), scegliendo la data effettiva di registrazione nel Flusso di Cassa e stampando le quietanze ufficiali.',
+      'Consente di monitorare i compensi erogati a guide, educatori, istruttori e collaboratori sportivi in conformità alla Riforma del Lavoro Sportivo (D.Lgs. 36/2021), cumulando anche i compensi percepiti dal lavoratore presso altre ASD/SSD nell\'anno solare ed escludendo dal massimale i rimborsi spese documentati.',
     features: [
       {
-        title: '1. Riepilogo Compensi per Collaboratore e Verifica Soglie',
+        title: '1. Soglie D.Lgs. 36/2021 sul Lavoratore (4.000 € Pre-Alert / 5.000 € INPS / 15.000 € IRPEF)',
         description:
-          'Visualizza per ogni membro dello staff il totale liquidato nell\'anno e il numero di operazioni registrate (utile per monitorare la soglia esente di € 5.000 / € 15.000 prevista dal D.Lgs. 36/2021).',
+          'Poiché la soglia di legge è calcolata sul singolo lavoratore sportivo e non sulla singola associazione, nella scheda di ogni collaboratore puoi inserire anche i "Compensi percepiti presso altre ASD/SSD nell\'anno". Il sistema mostra una barra di avanzamento e ti avvisa prima di pagare se il collaboratore supera 4.000 € (80% soglia), 5.000 € (obbligo contributivo INPS Gestione Separata e comunicazione RASD) o 15.000 € (soglia fiscale IRPEF).',
+        actionHint: 'Clicca su "Modifica / Compensi Altre ASD" sulla scheda del collaboratore per inserire i compensi esterni.',
       },
       {
-        title: '2. Registrazione Compenso con Scelta "Data di Oggi" o "Data Diversa"',
+        title: '2. Distinzione tra "Compenso Sportivo" e "Rimborso Spese Documentato"',
         description:
-          'Cliccando su "Nuovo Compenso Staff" scegli se registrare l\'uscita nel Flusso di Cassa con la data di oggi oppure con la data effettiva del bonifico/erogazione.',
+          'Quando registri un pagamento staff puoi scegliere se si tratta di un Compenso Sportivo / Collaborazione (che concorre alle soglie dei 5.000 € e 15.000 €) oppure di un Rimborso Spese Documentato / Anticipo (che viene registrato in contabilità ma escluso dal calcolo del massimale fiscale/contributivo).',
       },
       {
-        title: '3. Stampa Quietanza Compenso con Timbro ASD e Firma Presidente',
+        title: '3. Stampa Quietanza Compenso con Timbro ASD e Firma Grafica Etichettata',
         description:
-          'Per ogni pagamento puoi generare la Quietanza PDF precompilata con la clausola di esenzione fiscale ex art. 25 D.Lgs. 36/2021 e l\'applicazione automatica del Timbro ASD e della Firma del Presidente.',
+          'Per ogni pagamento puoi generare la Quietanza PDF precompilata con l\'autodichiarazione dei compensi percepiti presso altri enti ex D.Lgs. 36/2021, il Timbro ASD e la Firma grafica etichettata del Presidente.',
         actionHint: 'Clicca su "Quietanza PDF" accanto al movimento nella tabella.',
       },
     ],
     proTips: [
-      'Clicca sulla scheda di un singolo collaboratore in alto per filtrare istantaneamente solo i suoi pagamenti.',
+      'Se hai movimenti storici nel Libro Cassa privi di collegamento strutturato staffId, un apposito pannello ti permette di collegarli con un clic al collaboratore corretto.',
     ],
     driveIntegrationNote:
-      'L\'elenco collaboratori e lo storico compensi sono salvati su Google Drive o nel tuo File Locale .json su PC.',
+      'L\'elenco collaboratori, i compensi esterni dichiarati e lo storico pagamenti sono salvati su Google Drive o nel tuo File Locale .json su PC.',
   },
 
   governance: {
@@ -340,40 +339,40 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   receipts_config: {
     tabId: 'receipts_config',
-    title: 'Guida alla Pagina: Modello Ricevute Intelligente, Modelli Email Gmail & Diciture Sconto',
+    title: 'Guida alla Pagina: Registro Ricevute Progressivo, Modelli PDF, Controlli 730 & Gmail',
     shortSubtitle:
-      'Compositore ricevute multi-voce (Eventi, Doposcuola, Tessere, Gadget), 5 modelli email Gmail e archivio diciture sconto.',
+      'Registro ufficiale ricevute emesse/annullate (<ANNO>/R-<NNN>), controlli non bloccanti detrazione 730, 3 layout PDF e 5 modelli email.',
     overview:
-      'Questo pannello ti permette di personalizzare il Modello Unico Intelligente per le Ricevute PDF (valido per Eventi, Mensile Doposcuola/Selva, Tessere e Gadget), configurare Timbro ASD e Firma del Presidente, modificare i 5 Modelli Email predefiniti per l\'invio tramite Gmail e gestire l\'archivio delle Diciture Sconto selezionabili.',
+      'Questo pannello racchiude il Registro Ufficiale delle Ricevute Emesse (con numerazione progressiva annuale <ANNO>/R-<NNN>, ristampa, reinvio Gmail, annullamento motivato ed export Excel) e la configurazione del Modello Ricevute PDF, di Timbro/Firma e dei 5 Modelli Email.',
     features: [
       {
-        title: '1. Compositore Ricevute Intelligente (Eventi, Mensile Doposcuola, Tessere, Gadget)',
+        title: '1. Registro Ufficiale Ricevute con Numerazione Progressiva (<ANNO>/R-<NNN>)',
         description:
-          'Quando apri una ricevuta da un Evento, da una Tessera o da un Gadget, il sistema propone già automaticamente la voce corrispondente. Puoi sempre aggiungere, rimuovere o modificare al volo più voci nella stessa ricevuta (es. Evento + Tessera o Mensile Doposcuola), inserire uno sconto in Quota Fissa (€) o Percentuale (%) con dicitura personalizzata e scalare un Buono Spesa.',
+          'Il numero progressivo viene assegnato e consumato SOLO quando clicchi su "Emetti Ricevuta (PDF)" o "Emetti e Invia via Gmail" (aprire l\'anteprima o fare un preventivo non brucia mai numeri). Dal Registro Ricevute puoi filtrare per anno/stato, ristampare una ricevuta già emessa con lo stesso numero, annullarla con motivazione o esportare l\'intero registro in Excel.',
+        actionHint: 'Apri la scheda "5. Registro Ricevute Emesse" per consultare o esportare tutte le ricevute.',
       },
       {
-        title: '2. Scheda "4. Modelli Email & Sconti": 5 Modelli Email per Gmail con Allegato PDF',
+        title: '2. Controlli Automatici Non Bloccanti per Detrazione Fiscale 730 (Art. 15 TUIR)',
         description:
-          'Nella scheda "4. Modelli Email & Sconti" puoi personalizzare i 5 modelli email precompilati (Conferma & Ricevuta Evento, Ricevuta Tessera, Ricevuta Mensile Doposcuola, Ricevuta Gadget e Riepilogo Dati Iscrizione da Firmare). Quando premi "Invia via Gmail", il sistema aggiorna automaticamente il testo con i dati del socio in questione e allega il PDF.',
+          'Durante la composizione della ricevuta, il sistema verifica se il pagamento è in Contanti (non detraibile nel 730), se mancano il Codice Fiscale del genitore o i dati del ragazzo (5–18 anni) e se l\'importo supera € 77,47 (nota imposta di bollo € 2,00 / esenzione ASD), mostrando avvisi gialli informativi che non bloccano mai l\'emissione.',
+      },
+      {
+        title: '3. Scheda "4. Modelli Email & Sconti": 5 Modelli Email per Gmail con Allegato PDF',
+        description:
+          'Personalizza i 5 modelli email precompilati (Conferma & Ricevuta Evento, Ricevuta Tessera, Ricevuta Mensile Doposcuola, Ricevuta Gadget e Riepilogo Dati Iscrizione da Firmare) e l\'archivio delle diciture sconto.',
         actionHint: 'Clicca sulla scheda blu "4. Modelli Email & Sconti" in questa pagina.',
       },
       {
-        title: '3. Archivio Diciture Sconto / Copertura Quota Selezionabili',
+        title: '4. 3 Layout Grafici PDF, Timbro ASD e Firma Grafica Etichettata',
         description:
-          'Tutte le diciture inserite per motivare gli sconti nelle ricevute (es. "Riduzione fascia ISEE", "Quota coperta da Comune / Associazione Partner") restano salvate e possono essere gestite o aggiunte nella scheda "4. Modelli Email & Sconti".',
-      },
-      {
-        title: '4. Scelta tra 3 Layout Grafici PDF e Overlay Timbro ASD / Firma Presidente',
-        description:
-          'Scegli tra "Standard Classico", "Minimalista Moderno" e "Ufficiale Istituzionale" e regola posizione, scala e rotazione del Timbro ASD e della Firma del Presidente.',
-        actionHint: 'Clicca su "Scarica PDF di Prova" per verificare il risultato finale.',
+          'Scegli tra "Standard Classico", "Minimalista Moderno" e "Ufficiale Istituzionale". Quando è attiva l\'immagine della firma del Presidente, il PDF riporta la dicitura di trasparenza "Firma grafica del legale rappresentante su documento informatico".',
       },
     ],
     proTips: [
-      'Anche prima di inviare una singola email tramite Gmail puoi ritoccare liberamente l\'oggetto o il testo per quella famiglia specifica prima di premere "Conferma e Invia".',
+      'Se riapri la ricevuta di un movimento o di un\'iscrizione già collegata a una ricevuta emessa, il sistema ti mostra direttamente la ricevuta esistente evitando duplicati.',
     ],
     driveIntegrationNote:
-      'Il modello ricevuta, i 5 modelli email, le diciture sconto e le immagini di Timbro e Firma sono salvati su Google Drive o nel File Locale .json su PC.',
+      'Il Registro Ricevute, i modelli e le copie PDF inviate sono salvati su Google Drive e nel tuo File Locale .json su PC.',
   },
 
   notifications: {
@@ -416,36 +415,37 @@ export const PAGE_GUIDES: Record<NavTab, PageGuideContent> = {
 
   backup: {
     tabId: 'backup',
-    title: 'Guida alla Pagina: File Locale PC (OneDrive/Dropbox), Google Drive & Multi-Anno',
+    title: 'Guida alla Pagina: Google Drive Sicuro (drive.file), Backup Automatici, Archivi & Configurazione Multi-ASD',
     shortSubtitle:
-      'Salvataggio su File Locale PC o Google Drive (zero memoria browser), scelta anno 2026/2027 e Multi-ASD.',
+      'Salvataggio su File Locale PC o Google Drive, punti di ripristino automatici, archivi annuali ibridi, privacy dati sanitari e Wizard Multi-ASD.',
     overview:
-      "Da qui scegli come custodire in sicurezza i dati dell'associazione — usando un File Locale .json sul tuo PC (compatibile con cartelle OneDrive e Dropbox) oppure Google Drive in diretta — gestisci l'Anno Sportivo (2026, 2027 e futuri) con archiviazione dei flussi di cassa e personalizzi il nome e i dati dell'ASD.",
+      "Da qui gestisci la persistenza sicura dei dati (File Locale .json su PC / OneDrive / Dropbox e Google Drive con permesso ristretto drive.file), i Punti di Ripristino automatici su Drive, l'Archiviazione Annuale ibrida su file separati (archivio_<anno>.json), l'anonimizzazione dei dati sanitari storici e la Configurazione Guidata Multi-Associazione.",
     features: [
       {
-        title: '1. File Locale su PC (Compatibile con OneDrive / Dropbox) — Zero Memoria Browser',
+        title: '1. File Locale su PC (OneDrive / Dropbox), Google Drive (drive.file) & Pulizia al Logout',
         description:
-          'I dati non vengono mai lasciati nella memoria volatile del browser. Puoi aprire/collegare un file .json sul tuo PC (anche dentro una cartella sincronizzata OneDrive o Dropbox): ogni modifica viene salvata direttamente sul file.',
-        actionHint: 'Usa "Apri / Collega File .JSON da PC" o "Salva Subito su File .JSON PC" nel primo riquadro in alto.',
+          'Il gestionale utilizza il permesso ristretto "drive.file" (accede solo ai file creati dall\'app stessa). Per importare un Foglio Google creato manualmente fuori dall\'app, puoi incollare direttamente il link o l\'ID del foglio. Al logout ti viene proposto come scelta predefinita di cancellare tutti i dati locali dal computer (consigliato sui PC condivisi).',
+        actionHint: 'Usa "Apri / Collega File .JSON da PC" oppure connetti Google Drive.',
       },
       {
-        title: '2. Connessione Google Drive Live & Alberatura "Gestionale ASD"',
+        title: '2. Backup Automatici su Google Drive (Ultimi 30 + 1 al Mese) & Risoluzione Conflitti',
         description:
-          'In alternativa o in aggiunta al file su PC, puoi connettere Google Drive per salvare in diretta su "database_gestionale_asd.json" e nelle 7 sottocartelle ordinate.',
+          'Il sistema crea automaticamente un backup giornaliero su Drive e un backup prima di ogni operazione delicata (importazione, archiviazione anno, reset o sovrascrittura conflitto). Puoi consultare la lista dei backup in "07_Backup_Sistema" e ripristinarne uno qualsiasi con un clic.',
       },
       {
-        title: '3. Selettore Anno (2026, 2027...) & Archiviazione Flussi con Residuo a Bilancio',
+        title: '3. Archivi Annuali Ibridi (archivio_<anno>.json) & Anonimizzazione Dati Sanitari Storici',
         description:
-          'Scegli con un clic l\'anno attivo (es. 2026 ora e 2027 in futuro) oppure usa "Archivia Flussi e Passa al Nuovo Anno" per archiviare i movimenti mantenendo solo il residuo a bilancio come Fondo Iniziale e lasciando tutti i soci in Anagrafica.',
+          'Quando chiudi l\'anno sportivo, l\'archivio completo viene salvato anche in un file separato "archivio_<anno>.json" nella cartella Drive "06_Archivio_Annualita_Storiche". Puoi inoltre configurare la politica di conservazione per anonimizzare allergie e note mediche negli archivi più vecchi di N anni, mantenendo intatti i dati contabili.',
       },
       {
-        title: '4. Nome Associazione Modificabile (ASD Apuacamp & Altre Realtà Multi-ASD)',
+        title: '4. Configurazione Guidata Multi-Associazione (Dati, Ente, Tessere, Categorie, Soci Adulti)',
         description:
-          'L\'app mostra il credito "Creato da ASD Apuacamp" ma permette di modificare liberamente la Denominazione ASD, Codice Fiscale, Presidente, IBAN, Timbro, Firma e Tessera Digitale per concedere il gestionale anche ad altre associazioni.',
+          'Qualsiasi associazione può cliccare su "Configurazione Guidata (Tessere, Categorie, Ente, Soci Adulti)" per personalizzare in 4 passi denominazione, ente di affiliazione (US ACLI, CSEN, UISP, AICS, CSI, ecc.), tipologie di tessera, fasce d\'età, categorie di cassa ed eventi.',
+        actionHint: 'Clicca su "Configurazione Guidata" nella sezione Dati Istituzionali ASD o su "Configura ASD" nella barra laterale.',
       },
     ],
     proTips: [
-      'Anche nella barra in alto (Header) trovi sempre i pulsanti rapidi "Collega File PC", "Salva PC" e "Drive Live" per salvare o cambiare file in qualsiasi momento.',
+      'Nel piè di pagina della barra laterale trovi anche i link rapidi alle pagine informative pubbliche Privacy (/privacy) e Termini & Licenza (/termini).',
     ],
     driveIntegrationNote:
       'Supporta sia Google Drive ("Gestionale ASD") sia qualsiasi cartella locale PC sincronizzata con OneDrive, Dropbox o disco fisso.',

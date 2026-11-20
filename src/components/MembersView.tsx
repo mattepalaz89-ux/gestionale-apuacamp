@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import {
   Member,
+  EventBooking,
   InsuranceType,
   AgeGroup,
   CardValidityType,
@@ -64,12 +65,16 @@ import {
   SortDirection,
   sortMembersList,
 } from '../utils/finance';
+import { todayIso } from '../utils/dates';
+import { newId } from '../utils/ids';
 
 interface MembersViewProps {
   members: Member[];
+  bookings?: EventBooking[];
+  transactions?: CashTransaction[];
   profile: AssociationProfile;
   googleUserEmail: string | null;
-  onAddMember: (member: Omit<Member, 'id'>) => void;
+  onAddMember: (member: Omit<Member, 'id'>) => Member | void;
   onImportMembers: (members: Member[], mode: 'append' | 'replace') => void;
   onUpdateMember: (member: Member) => void;
   onDeleteMember: (id: string) => void;
@@ -81,6 +86,8 @@ interface MembersViewProps {
 
 export const MembersView: React.FC<MembersViewProps> = ({
   members,
+  bookings = [],
+  transactions = [],
   profile,
   googleUserEmail,
   onAddMember,
@@ -102,6 +109,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
   const [sortField, setSortField] = useState<MemberSortField>('childName');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [editingMember, setEditingMember] = useState<Member | null>(null);
+  const [confirmDeleteMemberId, setConfirmDeleteMemberId] = useState<string | null>(null);
   const [consentModalMember, setConsentModalMember] = useState<Member | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [importBannerMsg, setImportBannerMsg] = useState<{
@@ -136,7 +144,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
   // Card Renewal / Issue Modal State
   const [renewalMember, setRenewalMember] = useState<Member | null>(null);
   const [renewIssueDate, setRenewIssueDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
+    todayIso()
   );
   const [renewValidityType, setRenewValidityType] = useState<CardValidityType>('solare');
   const [renewCardNumber, setRenewCardNumber] = useState<string>('');
@@ -147,17 +155,49 @@ export const MembersView: React.FC<MembersViewProps> = ({
   const [renewRecordCash, setRenewRecordCash] = useState<boolean>(true);
   const [renewCashDateMode, setRenewCashDateMode] = useState<'today' | 'custom'>('today');
   const [renewCashCustomDate, setRenewCashCustomDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
+    todayIso()
   );
 
   // New member form state
-  const defaultIssueDate = new Date().toISOString().slice(0, 10);
+  const defaultIssueDate = todayIso();
   const [newMemberRecordCash, setNewMemberRecordCash] = useState<boolean>(false);
   const [newMemberCashAmount, setNewMemberCashAmount] = useState<number>(20);
   const [newMemberCashMethod, setNewMemberCashMethod] = useState<PaymentMethod>('Bonifico');
   const [newMemberCashDateMode, setNewMemberCashDateMode] = useState<'today' | 'custom'>('today');
   const [newMemberCashCustomDate, setNewMemberCashCustomDate] = useState<string>(defaultIssueDate);
+  const memberSubjectLabel = profile.hasAdultMembers ? 'Socio / Partecipante' : 'Bimbo/a';
+  const availableCardTypes = useMemo(() => {
+    if (Array.isArray(profile.cardTypes) && profile.cardTypes.length > 0) {
+      return profile.cardTypes;
+    }
+    return [
+      { id: 'Gold', label: getInsuranceDisplayLabel('Gold', profile) },
+      { id: 'Platinum', label: getInsuranceDisplayLabel('Platinum', profile) },
+      { id: 'Summer', label: getInsuranceDisplayLabel('Summer', profile) },
+      { id: 'Base', label: getInsuranceDisplayLabel('Base', profile) },
+    ];
+  }, [profile]);
+
+  const availableAgeGroups = useMemo(() => {
+    const base =
+      Array.isArray(profile.ageGroups) && profile.ageGroups.length > 0
+        ? [...profile.ageGroups]
+        : [
+            { id: '3-6', label: '3-6 anni' },
+            { id: '6-11', label: '6-11 anni' },
+            { id: '11-14', label: '11-14 anni' },
+          ];
+    if (
+      profile.hasAdultMembers &&
+      !base.some((g) => g.id.toLowerCase() === 'adulti')
+    ) {
+      base.push({ id: 'Adulti', label: 'Adulti (18+ anni)' });
+    }
+    return base;
+  }, [profile.ageGroups, profile.hasAdultMembers]);
+
   const [formData, setFormData] = useState<Omit<Member, 'id'>>({
+    isMinor: true,
     childName: '',
     birthDate: '',
     birthPlace: '',
@@ -298,18 +338,28 @@ export const MembersView: React.FC<MembersViewProps> = ({
       formData.expiryDate ||
       calculateCardExpiryDate(formData.cardIssueDate || defaultIssueDate, finalValidity);
 
+    const isAdultMember = formData.isMinor === false;
     const newMemberPayload: Omit<Member, 'id'> = {
       ...formData,
+      isMinor: !isAdultMember,
+      parentName:
+        isAdultMember && !formData.parentName.trim()
+          ? formData.childName.trim()
+          : formData.parentName,
+      parentFiscalCode:
+        isAdultMember && !formData.parentFiscalCode.trim()
+          ? formData.childFiscalCode.trim()
+          : formData.parentFiscalCode,
       cardValidityType: finalValidity,
       expiryDate: finalExpiry,
     };
 
-    onAddMember(newMemberPayload);
+    const createdMember = onAddMember(newMemberPayload);
 
     if (newMemberRecordCash && formData.isPaid && newMemberCashAmount > 0) {
       const txDate =
         newMemberCashDateMode === 'today'
-          ? new Date().toISOString().slice(0, 10)
+          ? todayIso()
           : newMemberCashCustomDate;
       onAddTransaction({
         date: txDate,
@@ -317,6 +367,8 @@ export const MembersView: React.FC<MembersViewProps> = ({
         income: newMemberCashAmount,
         expense: null,
         method: newMemberCashMethod,
+        memberId: createdMember ? createdMember.id : undefined,
+        relatedMemberName: formData.childName,
         description: `Nuova Tessera ${
           finalValidity === 'tessera_365' ? '365' : 'Annuale'
         } (${formData.insuranceType}) - ${formData.childName}`,
@@ -336,24 +388,37 @@ export const MembersView: React.FC<MembersViewProps> = ({
   const handleSaveEditedMember = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingMember) return;
-    onUpdateMember(editingMember);
-    const nextList = members.map((m) => (m.id === editingMember.id ? editingMember : m));
+    const isAdultMember = editingMember.isMinor === false;
+    const normalizedEdited: Member = {
+      ...editingMember,
+      isMinor: !isAdultMember,
+      parentName:
+        isAdultMember && !editingMember.parentName.trim()
+          ? editingMember.childName.trim()
+          : editingMember.parentName,
+      parentFiscalCode:
+        isAdultMember && !editingMember.parentFiscalCode.trim()
+          ? editingMember.childFiscalCode.trim()
+          : editingMember.parentFiscalCode,
+    };
+    onUpdateMember(normalizedEdited);
+    const nextList = members.map((m) => (m.id === normalizedEdited.id ? normalizedEdited : m));
     await syncWithLinkedGoogleSheet(nextList);
     setEditingMember(null);
     setImportBannerMsg({
       type: 'ok',
-      text: `Anagrafica di "${editingMember.childName}" aggiornata con successo!`,
+      text: `Anagrafica di "${normalizedEdited.childName}" aggiornata con successo!`,
     });
   };
 
   // Open Renewal Modal for a Member
   const openRenewalModal = (member: Member) => {
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const eligible365 = isTessera365Eligible(todayIso);
+    const todayDate = todayIso();
+    const eligible365 = isTessera365Eligible(todayDate);
     const initialValType: CardValidityType = eligible365 ? 'tessera_365' : 'solare';
 
     setRenewalMember(member);
-    setRenewIssueDate(todayIso);
+    setRenewIssueDate(todayDate);
     setRenewValidityType(initialValType);
     setRenewCardNumber('');
     setRenewInsurance(member.insuranceType || 'Gold');
@@ -362,7 +427,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
     setRenewMethod('Bonifico');
     setRenewRecordCash(true);
     setRenewCashDateMode('today');
-    setRenewCashCustomDate(todayIso);
+    setRenewCashCustomDate(todayDate);
   };
 
   // Confirm Renewal / New Card
@@ -380,7 +445,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
     const updatedHistory = renewalMember.membershipCardNumber
       ? [
           {
-            id: `ch-${Date.now()}`,
+            id: newId('ch'),
             cardNumber: renewalMember.membershipCardNumber,
             issueDate: renewalMember.cardIssueDate || 'Storico',
             expiryDate: renewalMember.expiryDate || '-',
@@ -408,7 +473,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
     if (renewRecordCash && renewIsPaid && renewAmount > 0) {
       const txDate =
         renewCashDateMode === 'today'
-          ? new Date().toISOString().slice(0, 10)
+          ? todayIso()
           : renewCashCustomDate;
       onAddTransaction({
         date: txDate,
@@ -416,6 +481,8 @@ export const MembersView: React.FC<MembersViewProps> = ({
         income: renewAmount,
         expense: null,
         method: renewMethod,
+        memberId: renewalMember.id,
+        relatedMemberName: renewalMember.childName,
         description: `Rinnovo Tessera ${
           effectiveValidity === 'tessera_365' ? '365' : 'Annuale'
         } (${renewInsurance}) - ${renewalMember.childName}`,
@@ -741,7 +808,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
-                  onClick={() => downloadEmptyExcelTemplate('soci')}
+                  onClick={() => downloadEmptyExcelTemplate('soci', profile.name)}
                   title="Scarica Modello Excel Vuoto (.xlsx) per Anagrafica Soci"
                   className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 bg-white hover:bg-emerald-50 border border-emerald-200 rounded-lg transition-colors"
                 >
@@ -1025,11 +1092,12 @@ export const MembersView: React.FC<MembersViewProps> = ({
                 onChange={(e) => setSelectedInsurance(e.target.value)}
                 className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700"
               >
-                <option value="ALL">Tutte le Assicurazioni</option>
-                <option value="Platinum">{getInsuranceDisplayLabel('Platinum', profile)}</option>
-                <option value="Gold">{getInsuranceDisplayLabel('Gold', profile)}</option>
-                <option value="Summer">{getInsuranceDisplayLabel('Summer', profile)}</option>
-                <option value="Base">{getInsuranceDisplayLabel('Base', profile)}</option>
+                <option value="ALL">Tutte le Tessere / Assicurazioni</option>
+                {availableCardTypes.map((ct) => (
+                  <option key={ct.id} value={ct.id}>
+                    {getInsuranceDisplayLabel(ct.id, profile)}
+                  </option>
+                ))}
               </select>
 
               <select
@@ -1037,10 +1105,12 @@ export const MembersView: React.FC<MembersViewProps> = ({
                 onChange={(e) => setSelectedGroup(e.target.value)}
                 className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700"
               >
-                <option value="ALL">Tutte le Età</option>
-                <option value="3-6">Gruppo 3-6 anni</option>
-                <option value="6-11">Gruppo 6-11 anni</option>
-                <option value="11-14">Gruppo 11-14 anni</option>
+                <option value="ALL">Tutte le Età / Gruppi</option>
+                {availableAgeGroups.map((ag) => (
+                  <option key={ag.id} value={ag.id}>
+                    {ag.label}
+                  </option>
+                ))}
               </select>
 
               <select
@@ -1062,7 +1132,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
 
             <div className="flex items-center gap-2 shrink-0">
               <button
-                onClick={() => exportMembersToCSV(filteredMembers)}
+                onClick={() => exportMembersToCSV(filteredMembers, profile.name)}
                 title="Esporta Soci Filtrati in CSV"
                 aria-label="Esporta Soci Filtrati in CSV"
                 className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors shadow-2xs"
@@ -1081,11 +1151,11 @@ export const MembersView: React.FC<MembersViewProps> = ({
                   <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
                     <th
                       onClick={() => handleToggleSort('childName')}
-                      title="Clicca per ordinare per Nome Bimbo/a (1° tap A→Z, 2° tap Z→A)"
+                      title={`Clicca per ordinare per Nome ${memberSubjectLabel} (1° tap A→Z, 2° tap Z→A)`}
                       className="py-3 px-4 cursor-pointer hover:bg-slate-100 hover:text-slate-900 select-none transition-colors"
                     >
                       <span className="inline-flex items-center">
-                        Bimbo/a & Data Nascita {renderSortIcon('childName')}
+                        {memberSubjectLabel} & Data Nascita {renderSortIcon('childName')}
                       </span>
                     </th>
                     <th
@@ -1205,7 +1275,14 @@ export const MembersView: React.FC<MembersViewProps> = ({
                       return (
                         <tr key={m.id} className="hover:bg-slate-50/80 transition-colors group">
                           <td className="py-3 px-4">
-                            <div className="font-bold text-slate-900">{m.childName}</div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-slate-900">{m.childName}</span>
+                              {m.isMinor === false && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                                  Adulto
+                                </span>
+                              )}
+                            </div>
                             <div className="text-[11px] text-slate-400 font-mono flex items-center gap-2 mt-0.5">
                               <span>{m.birthDate || 'Data n/d'}</span>
                               {m.birthPlace && <span>· {m.birthPlace}</span>}
@@ -1459,15 +1536,33 @@ export const MembersView: React.FC<MembersViewProps> = ({
             </div>
 
             <form onSubmit={handleSaveEditedMember} className="mt-4 space-y-4 text-xs">
-              {/* Dati Bimbo Editabili */}
+              {/* Dati Bimbo / Socio Editabili */}
               <div className="p-3.5 bg-slate-50 rounded-xl space-y-3 border border-slate-100">
-                <div className="font-semibold text-slate-900 uppercase tracking-wide text-[10px]">
-                  1. Dati Anagrafici Bambino/a
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="font-semibold text-slate-900 uppercase tracking-wide text-[10px]">
+                    1. Dati Anagrafici {editingMember.isMinor === false ? 'Socio Adulto' : memberSubjectLabel}
+                  </div>
+                  <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 cursor-pointer bg-white px-2.5 py-1 rounded-lg border border-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={editingMember.isMinor === false}
+                      onChange={(e) => {
+                        const isAdult = e.target.checked;
+                        setEditingMember({
+                          ...editingMember,
+                          isMinor: !isAdult,
+                          group: isAdult ? 'Adulti' : editingMember.group,
+                        });
+                      }}
+                      className="rounded border-slate-300 text-emerald-600"
+                    />
+                    <span>Socio Adulto (Maggiorenne — campi genitore facoltativi)</span>
+                  </label>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="sm:col-span-2">
                     <label className="text-slate-600 block mb-1 font-medium">
-                      Nome e Cognome Bimbo/a *
+                      Nome e Cognome {editingMember.isMinor === false ? 'Socio' : memberSubjectLabel} *
                     </label>
                     <input
                       type="text"
@@ -1480,7 +1575,7 @@ export const MembersView: React.FC<MembersViewProps> = ({
                     />
                   </div>
                   <div>
-                    <label className="text-slate-600 block mb-1 font-medium">Gruppo d'Età</label>
+                    <label className="text-slate-600 block mb-1 font-medium">Gruppo d&apos;Età</label>
                     <select
                       value={editingMember.group}
                       onChange={(e) =>
@@ -1491,9 +1586,11 @@ export const MembersView: React.FC<MembersViewProps> = ({
                       }
                       className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg font-mono"
                     >
-                      <option value="3-6">3-6 anni</option>
-                      <option value="6-11">6-11 anni</option>
-                      <option value="11-14">11-14 anni</option>
+                      {availableAgeGroups.map((ag) => (
+                        <option key={ag.id} value={ag.id}>
+                          {ag.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -1651,10 +1748,11 @@ export const MembersView: React.FC<MembersViewProps> = ({
                       }
                       className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg font-semibold"
                     >
-                      <option value="Gold">{getInsuranceDisplayLabel('Gold', profile)}</option>
-                      <option value="Platinum">{getInsuranceDisplayLabel('Platinum', profile)}</option>
-                      <option value="Summer">{getInsuranceDisplayLabel('Summer', profile)}</option>
-                      <option value="Base">{getInsuranceDisplayLabel('Base', profile)}</option>
+                      {availableCardTypes.map((ct) => (
+                        <option key={ct.id} value={ct.id}>
+                          {getInsuranceDisplayLabel(ct.id, profile)}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -1887,20 +1985,66 @@ export const MembersView: React.FC<MembersViewProps> = ({
                 </div>
               </div>
 
+              {confirmDeleteMemberId === editingMember.id && (
+                <div className="p-3.5 rounded-xl bg-rose-50 border-2 border-rose-300 text-rose-950 text-xs space-y-2.5">
+                  <div className="font-bold text-sm">
+                    Confermi l&apos;eliminazione di &ldquo;{editingMember.childName}&rdquo; dall&apos;Anagrafica Soci?
+                  </div>
+                  {(() => {
+                    const normName = editingMember.childName.trim().toLowerCase();
+                    const linkedBookingsCount = bookings.filter(
+                      (b) =>
+                        b.memberId === editingMember.id ||
+                        b.childName.trim().toLowerCase() === normName
+                    ).length;
+                    const linkedTxCount = transactions.filter(
+                      (t) =>
+                        t.memberId === editingMember.id ||
+                        (t.relatedMemberName &&
+                          t.relatedMemberName.trim().toLowerCase() === normName)
+                    ).length;
+                    return (
+                      <p className="text-[11px] text-rose-900">
+                        {linkedBookingsCount > 0 || linkedTxCount > 0 ? (
+                          <>
+                            Questo socio risulta collegato a{' '}
+                            <strong>{linkedBookingsCount} iscrizioni eventi</strong> e{' '}
+                            <strong>{linkedTxCount} movimenti contabili</strong>. I movimenti di cassa e le iscrizioni <strong>non verranno cancellati</strong> a cascata (resteranno nel bilancio perdendo solo il collegamento `memberId`).
+                          </>
+                        ) : (
+                          'Il socio verrà rimosso dall’elenco tesserati.'
+                        )}
+                      </p>
+                    );
+                  })()}
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteMemberId(null)}
+                      className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-slate-700 font-semibold"
+                    >
+                      Annulla
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onDeleteMember(editingMember.id);
+                        setConfirmDeleteMemberId(null);
+                        setEditingMember(null);
+                      }}
+                      className="px-3.5 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-800 text-white font-bold"
+                    >
+                      Conferma Eliminazione Socio
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      if (
-                        confirm(
-                          `Confermi l'eliminazione definitiva di "${editingMember.childName}" dall'Anagrafica Soci?`
-                        )
-                      ) {
-                        onDeleteMember(editingMember.id);
-                        setEditingMember(null);
-                      }
-                    }}
+                    onClick={() => setConfirmDeleteMemberId(editingMember.id)}
                     className="flex items-center gap-1 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 rounded-lg border border-rose-200"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -2095,10 +2239,11 @@ export const MembersView: React.FC<MembersViewProps> = ({
                     onChange={(e) => setRenewInsurance(e.target.value as InsuranceType)}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
                   >
-                    <option value="Gold">{getInsuranceDisplayLabel('Gold', profile)}</option>
-                    <option value="Platinum">{getInsuranceDisplayLabel('Platinum', profile)}</option>
-                    <option value="Summer">{getInsuranceDisplayLabel('Summer', profile)}</option>
-                    <option value="Base">{getInsuranceDisplayLabel('Base', profile)}</option>
+                    {availableCardTypes.map((ct) => (
+                      <option key={ct.id} value={ct.id}>
+                        {getInsuranceDisplayLabel(ct.id, profile)}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -2195,9 +2340,30 @@ export const MembersView: React.FC<MembersViewProps> = ({
             </div>
 
             <form onSubmit={handleSaveNewMember} className="space-y-4 text-xs">
+              <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                <span className="font-semibold text-slate-700">Tipologia Iscritto:</span>
+                <label className="inline-flex items-center gap-1.5 font-semibold text-slate-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.isMinor === false}
+                    onChange={(e) => {
+                      const isAdult = e.target.checked;
+                      setFormData({
+                        ...formData,
+                        isMinor: !isAdult,
+                        group: isAdult ? 'Adulti' : '6-11',
+                      });
+                    }}
+                    className="rounded border-slate-300 text-emerald-600"
+                  />
+                  <span>Socio Adulto (Maggiorenne — campi genitore facoltativi)</span>
+                </label>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="col-span-2 sm:col-span-1">
-                  <label className="block text-slate-700 font-medium mb-1">Nome Bimbo/a *</label>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Nome {formData.isMinor === false ? 'Socio Adulto' : memberSubjectLabel} *
+                  </label>
                   <input
                     type="text"
                     required
@@ -2236,9 +2402,11 @@ export const MembersView: React.FC<MembersViewProps> = ({
                     }
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
                   >
-                    <option value="3-6">3-6 anni</option>
-                    <option value="6-11">6-11 anni</option>
-                    <option value="11-14">11-14 anni</option>
+                    {availableAgeGroups.map((ag) => (
+                      <option key={ag.id} value={ag.id}>
+                        {ag.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div className="col-span-2">
@@ -2314,10 +2482,11 @@ export const MembersView: React.FC<MembersViewProps> = ({
                       }
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
                     >
-                      <option value="Gold">{getInsuranceDisplayLabel('Gold', profile)}</option>
-                      <option value="Platinum">{getInsuranceDisplayLabel('Platinum', profile)}</option>
-                      <option value="Summer">{getInsuranceDisplayLabel('Summer', profile)}</option>
-                      <option value="Base">{getInsuranceDisplayLabel('Base', profile)}</option>
+                      {availableCardTypes.map((ct) => (
+                        <option key={ct.id} value={ct.id}>
+                          {getInsuranceDisplayLabel(ct.id, profile)}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <div>

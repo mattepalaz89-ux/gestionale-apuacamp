@@ -27,6 +27,8 @@ import {
   formatRemainingTimeHuman,
   getVisualAlertMeta,
 } from '../utils/criticalDeadlines';
+import { todayIso } from '../utils/dates';
+import { newId } from '../utils/ids';
 import { NavTab } from './Sidebar';
 
 interface CriticalDeadlinesWidgetProps {
@@ -222,7 +224,7 @@ export const CriticalDeadlinesWidget: React.FC<CriticalDeadlinesWidgetProps> = (
       customDueDate: existing?.customDueDate,
       resolutionNote: actionNoteText.trim() || 'Risolto e archiviato',
       isCompleted: true,
-      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedAt: todayIso(),
     };
 
     onUpdateProfile({
@@ -252,7 +254,7 @@ export const CriticalDeadlinesWidget: React.FC<CriticalDeadlinesWidgetProps> = (
         existing?.resolutionNote ||
         `Rimandata al ${actionPostponeDate}`,
       isCompleted: false,
-      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedAt: todayIso(),
     };
 
     onUpdateProfile({
@@ -324,7 +326,7 @@ export const CriticalDeadlinesWidget: React.FC<CriticalDeadlinesWidgetProps> = (
           ...existing,
           deadlineId,
           isHidden: true,
-          updatedAt: new Date().toISOString().slice(0, 10),
+          updatedAt: todayIso(),
         },
       },
     });
@@ -368,7 +370,7 @@ export const CriticalDeadlinesWidget: React.FC<CriticalDeadlinesWidgetProps> = (
         customDueDateLabel: newRecurrenceLabel.trim() || 'Data Scelta ASD',
         isPermanentDateChange: true,
         isHidden: false,
-        updatedAt: new Date().toISOString().slice(0, 10),
+        updatedAt: todayIso(),
       };
       onUpdateProfile({
         ...profile,
@@ -410,7 +412,7 @@ export const CriticalDeadlinesWidget: React.FC<CriticalDeadlinesWidgetProps> = (
       });
     } else {
       const customItem: CustomCriticalDeadline = {
-        id: `custom-dl-${Date.now()}`,
+        id: newId('custom-dl'),
         title: newTitle.trim(),
         description:
           newDesc.trim() ||

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   FileText,
   Sparkles,
@@ -17,20 +17,37 @@ import {
   Eye,
   Wand2,
   Mail,
+  ListOrdered,
+  AlertTriangle,
+  Search,
+  Ban,
+  ExternalLink,
+  FileSpreadsheet,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   AssociationProfile,
   EmailTemplateConfig,
   EmailTemplateId,
   ImageOverlayConfig,
+  IssuedReceipt,
   Member,
   ReceiptDynamicField,
   ReceiptDynamicFieldPosition,
   ReceiptDynamicFieldType,
   ReceiptLayoutTemplateId,
   ReceiptTemplateConfig,
+  TaxDeductionRules,
 } from '../types';
 import { formatEuro, mergeSavedDiscountLabels } from '../utils/finance';
+import { exportReceiptsRegistryToExcel } from '../utils/export';
+import {
+  DEFAULT_RECEIPT_NUMBER_FORMAT,
+  DEFAULT_TAX_DEDUCTION_RULES,
+  detectReceiptNumberGaps,
+  formatReceiptNumber,
+  nextReceiptProgressive,
+} from '../utils/receipts';
 import {
   DEFAULT_DYNAMIC_FIELDS,
   DEFAULT_EMAIL_TEMPLATES,
@@ -54,19 +71,29 @@ import {
   resolveReceiptConfig,
   ReceiptPlaceholderContext,
 } from '../utils/formAndReceiptTemplates';
+import { todayIso } from '../utils/dates';
+import { newId } from '../utils/ids';
 
 interface ReceiptConfigViewProps {
   profile: AssociationProfile;
   members: Member[];
+  receipts?: IssuedReceipt[];
   onUpdateProfile: (profile: AssociationProfile) => void;
   onOpenSampleReceiptModal?: () => void;
+  onCancelReceipt?: (receiptId: string, cancelReason: string) => void;
+  onReopenReceiptPdf?: (receipt: IssuedReceipt) => void;
+  onResendReceiptEmail?: (receipt: IssuedReceipt) => void;
 }
 
 export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
   profile,
   members,
+  receipts = [],
   onUpdateProfile,
   onOpenSampleReceiptModal,
+  onCancelReceipt,
+  onReopenReceiptPdf,
+  onResendReceiptEmail,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<
     'texts' | 'dynamic_fields' | 'overlays' | 'email_templates'
@@ -74,6 +101,24 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
   const [previewDocType, setPreviewDocType] = useState<'ricevuta' | 'preventivo' | 'sollecito'>(
     'ricevuta'
   );
+
+  // Registro Ricevute state (Phase 3.3 & 3.4)
+  const [registryYearFilter, setRegistryYearFilter] = useState<number | 'ALL'>('ALL');
+  const [registryStatusFilter, setRegistryStatusFilter] = useState<
+    'ALL' | 'emessa' | 'annullata'
+  >('ALL');
+  const [registrySearchQuery, setRegistrySearchQuery] = useState<string>('');
+  const [cancellingReceiptId, setCancellingReceiptId] = useState<string | null>(null);
+  const [cancelReasonInput, setCancelReasonInput] = useState<string>('');
+  const [is730ConfigOpen, setIs730ConfigOpen] = useState<boolean>(false);
+
+  const [receiptNumberFormatInput, setReceiptNumberFormatInput] = useState<string>(
+    profile.receiptNumberFormat || DEFAULT_RECEIPT_NUMBER_FORMAT
+  );
+  const [taxRulesInput, setTaxRulesInput] = useState<TaxDeductionRules>(() => ({
+    ...DEFAULT_TAX_DEDUCTION_RULES,
+    ...(profile.taxDeductionRules || {}),
+  }));
 
   const [config, setConfig] = useState<ReceiptTemplateConfig>(() =>
     resolveReceiptConfig(profile)
@@ -97,7 +142,71 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
     setStampDataUrl(profile.stampImageDataUrl);
     setSignatureDataUrl(profile.signatureImageDataUrl);
     setEmailTemplates(resolveEmailTemplates(profile));
+    setReceiptNumberFormatInput(profile.receiptNumberFormat || DEFAULT_RECEIPT_NUMBER_FORMAT);
+    setTaxRulesInput({
+      ...DEFAULT_TAX_DEDUCTION_RULES,
+      ...(profile.taxDeductionRules || {}),
+    });
   }, [profile]);
+
+  const availableReceiptYears = useMemo(() => {
+    const yrs = new Set<number>([profile.activeYear]);
+    receipts.forEach((r) => {
+      if (Number.isFinite(r.year)) yrs.add(r.year);
+    });
+    return Array.from(yrs).sort((a, b) => b - a);
+  }, [receipts, profile.activeYear]);
+
+  const inspectedGapYear =
+    registryYearFilter === 'ALL' ? profile.activeYear : registryYearFilter;
+
+  const numberingGaps = useMemo(
+    () => detectReceiptNumberGaps(receipts, inspectedGapYear),
+    [receipts, inspectedGapYear]
+  );
+
+  const filteredReceipts = useMemo(() => {
+    const q = registrySearchQuery.trim().toLowerCase();
+    return [...receipts]
+      .filter((r) => {
+        if (registryYearFilter !== 'ALL' && r.year !== registryYearFilter) return false;
+        if (registryStatusFilter !== 'ALL' && r.status !== registryStatusFilter) return false;
+        if (!q) return true;
+        return (
+          r.number.toLowerCase().includes(q) ||
+          r.payerName.toLowerCase().includes(q) ||
+          (r.payerFiscalCode || '').toLowerCase().includes(q) ||
+          (r.participantName || '').toLowerCase().includes(q) ||
+          (r.participantFiscalCode || '').toLowerCase().includes(q) ||
+          r.description.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        if (a.year !== b.year) return b.year - a.year;
+        return b.progressive - a.progressive;
+      });
+  }, [receipts, registryYearFilter, registryStatusFilter, registrySearchQuery]);
+
+  const handleSaveNumberingAnd730Rules = () => {
+    const cleanFormat =
+      receiptNumberFormatInput.trim() || DEFAULT_RECEIPT_NUMBER_FORMAT;
+    onUpdateProfile({
+      ...profile,
+      receiptNumberFormat: cleanFormat,
+      taxDeductionRules: {
+        minAge: Math.max(0, Number(taxRulesInput.minAge) || 5),
+        maxAge: Math.max(1, Number(taxRulesInput.maxAge) || 18),
+        maxAnnualAmountPerChild: Math.max(
+          0,
+          Number(taxRulesInput.maxAnnualAmountPerChild) || 210
+        ),
+      },
+    });
+    setSavedBanner(
+      'Formato numerazione progressiva e parametri detrazione 730 salvati nel profilo ASD!'
+    );
+    setTimeout(() => setSavedBanner(null), 4000);
+  };
 
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -147,7 +256,7 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
     attivita: `Campus Outdoor & Tesseramento ${profile.activeYear}`,
     importo: 120,
     metodo_pagamento: 'Bonifico Bancario',
-    data: new Date().toISOString().slice(0, 10),
+    data: todayIso(),
     numero_ricevuta: `${profile.activeYear}/R-104`,
     anno: profile.activeYear,
     asd_nome: profile.name,
@@ -239,7 +348,7 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
         : undefined;
 
     const newField: ReceiptDynamicField = {
-      id: `dyn-${Date.now()}`,
+      id: newId('dyn'),
       label: newDynLabel.trim(),
       valueTemplate:
         newDynTemplate.trim() ||
@@ -264,7 +373,7 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
   const handleAddSuggestedDynamicField = (sug: Omit<ReceiptDynamicField, 'id'>) => {
     const newField: ReceiptDynamicField = {
       ...sug,
-      id: `dyn-sug-${Date.now()}-${Math.floor(Math.random() * 100)}`,
+      id: newId('dyn-sug'),
     };
     const nextCfg: ReceiptTemplateConfig = {
       ...config,
@@ -297,7 +406,7 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
       customLines: [
         ...prev.customLines,
         {
-          id: `rl-${Date.now()}`,
+          id: newId('rl'),
           label: newLineLabel.trim(),
           value: newLineValue.trim(),
         },
@@ -563,6 +672,449 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
         </div>
       )}
 
+      {/* ================================================================== */}
+      {/* REGISTRO PROGRESSIVO RICEVUTE EMESSE & REGOLE DETRAZIONE 730       */}
+      {/* ================================================================== */}
+      <div
+        id="receipts-registry-panel"
+        className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs space-y-4 text-xs"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
+          <div>
+            <div className="flex items-center gap-2">
+              <ListOrdered className="w-4 h-4 text-emerald-700" />
+              <h3 className="text-sm font-bold text-slate-900">
+                Registro Progressivo Ricevute Emesse ({receipts.length})
+              </h3>
+              <span className="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px] font-bold">
+                Prossimo N° ({profile.activeYear}):{' '}
+                {formatReceiptNumber(
+                  nextReceiptProgressive(receipts, profile.activeYear),
+                  profile.activeYear,
+                  profile.receiptNumberFormat
+                )}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Archivio sequenziale delle ricevute emesse per anno fiscale, con rilevamento automatico
+              dei buchi di numerazione, riapertura PDF, reinvio email, annullamento tracciato ed
+              esportazione Excel per il commercialista.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIs730ConfigOpen((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold border transition-colors ${
+                is730ConfigOpen
+                  ? 'bg-slate-900 text-white border-slate-900'
+                  : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Formato Numerazione & Regole 730</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                exportReceiptsRegistryToExcel({
+                  receipts: filteredReceipts,
+                  associationName: profile.name,
+                  filterYear: registryYearFilter,
+                })
+              }
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-white bg-emerald-700 hover:bg-emerald-800 transition-colors shadow-2xs"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>Esporta Registro (.xlsx)</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Collapsible Numbering Format & 730 Rules Configurator (Phase 3.2 & 3.4) */}
+        {is730ConfigOpen && (
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="font-bold text-slate-900 text-xs">
+                  Configurazione Formato Numerazione & Parametri Controllo Detrazione 730 (Art. 15
+                  TUIR)
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Personalizza il formato del numero progressivo (variabili:{' '}
+                  <code className="font-mono">{'{n}'}</code> e{' '}
+                  <code className="font-mono">{'{anno}'}</code>) e le soglie di avviso per la
+                  detrazione IRPEF 19% delle spese sportive dei minori.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleSaveNumberingAnd730Rules}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Salva Regole</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Formato Numero Ricevuta
+                </label>
+                <input
+                  type="text"
+                  value={receiptNumberFormatInput}
+                  onChange={(e) => setReceiptNumberFormatInput(e.target.value)}
+                  placeholder="{n}/{anno}"
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-bold"
+                />
+                <div className="text-[10px] text-slate-500 mt-1">
+                  Esempio:{' '}
+                  <strong className="font-mono text-slate-800">
+                    {formatReceiptNumber(1, profile.activeYear, receiptNumberFormatInput)}
+                  </strong>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Età Minima Detrazione 730 (anni)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={25}
+                  value={taxRulesInput.minAge}
+                  onChange={(e) =>
+                    setTaxRulesInput((prev) => ({
+                      ...prev,
+                      minAge: Number(e.target.value),
+                    }))
+                  }
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Età Massima Detrazione 730 (anni)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={taxRulesInput.maxAge}
+                  onChange={(e) =>
+                    setTaxRulesInput((prev) => ({
+                      ...prev,
+                      maxAge: Number(e.target.value),
+                    }))
+                  }
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  Tetto Annuo Detraibile per Figlio (€)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step={10}
+                  value={taxRulesInput.maxAnnualAmountPerChild}
+                  onChange={(e) =>
+                    setTaxRulesInput((prev) => ({
+                      ...prev,
+                      maxAnnualAmountPerChild: Number(e.target.value),
+                    }))
+                  }
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 italic">
+              Nota bene: i valori predefiniti (età 5–18 anni, tetto massimo 210 € annui per figlio,
+              obbligo di pagamento tracciabile) riflettono l&apos;art. 15, c. 1, lett. i-quinquies
+              del TUIR. Verificare i requisiti aggiornati con il proprio consulente.
+            </div>
+          </div>
+        )}
+
+        {/* Automatic Numbering Gap Detector Banner (Phase 3.3) */}
+        {numberingGaps.length > 0 && (
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold">
+                Rilevati buchi nella numerazione progressiva ({inspectedGapYear}):
+              </span>{' '}
+              mancano i numeri progressivi{' '}
+              <strong className="font-mono">{numberingGaps.join(', ')}</strong>. Verifica se sono
+              state emesse ricevute su blocchetto cartaceo o se un numero è stato saltato
+              manualmente.
+            </div>
+          </div>
+        )}
+
+        {/* Registry Filters (Year, Status, Text Search) */}
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+          <div className="sm:col-span-3">
+            <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+              Anno Fiscale
+            </label>
+            <select
+              value={registryYearFilter}
+              onChange={(e) =>
+                setRegistryYearFilter(
+                  e.target.value === 'ALL' ? 'ALL' : Number(e.target.value)
+                )
+              }
+              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 font-semibold"
+            >
+              <option value="ALL">Tutti gli anni ({receipts.length})</option>
+              {availableReceiptYears.map((yr) => (
+                <option key={yr} value={yr}>
+                  Anno {yr}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="sm:col-span-3">
+            <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+              Stato Ricevuta
+            </label>
+            <select
+              value={registryStatusFilter}
+              onChange={(e) =>
+                setRegistryStatusFilter(
+                  e.target.value as 'ALL' | 'emessa' | 'annullata'
+                )
+              }
+              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 font-semibold"
+            >
+              <option value="ALL">Tutte (Emesse + Annullate)</option>
+              <option value="emessa">Solo Emesse Valide</option>
+              <option value="annullata">Solo Annullate</option>
+            </select>
+          </div>
+
+          <div className="sm:col-span-6">
+            <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+              Ricerca (N° Ricevuta, Genitore, Socio, Codice Fiscale, Causale)
+            </label>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
+              <input
+                type="text"
+                value={registrySearchQuery}
+                onChange={(e) => setRegistrySearchQuery(e.target.value)}
+                placeholder="Cerca per numero, nome, C.F. o descrizione..."
+                className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-200 bg-white"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Registry Table */}
+        {filteredReceipts.length === 0 ? (
+          <div className="p-6 text-center rounded-xl bg-slate-50 border border-dashed border-slate-200 text-slate-500">
+            Nessuna ricevuta presente nel registro con i filtri selezionati. Quando scarichi un PDF
+            o invii una ricevuta tramite Gmail dal modale ricevuta, il documento viene registrato
+            automaticamente qui con il suo numero progressivo.
+          </div>
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-50 text-slate-600 border-b border-slate-200 text-[10px] uppercase font-bold">
+                  <th className="py-2.5 px-3">N° Ricevuta</th>
+                  <th className="py-2.5 px-3">Data</th>
+                  <th className="py-2.5 px-3">Stato</th>
+                  <th className="py-2.5 px-3">Pagante / Genitore</th>
+                  <th className="py-2.5 px-3">Socio / Partecipante</th>
+                  <th className="py-2.5 px-3">Causale & Metodo</th>
+                  <th className="py-2.5 px-3 text-right">Importo</th>
+                  <th className="py-2.5 px-3 text-right">Azioni</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {filteredReceipts.map((r) => {
+                  const isCancelled = r.status === 'annullata';
+                  const isCancellingThis = cancellingReceiptId === r.id;
+                  return (
+                    <React.Fragment key={r.id}>
+                      <tr
+                        className={
+                          isCancelled
+                            ? 'bg-rose-50/40 text-slate-500'
+                            : 'bg-white hover:bg-slate-50/80'
+                        }
+                      >
+                        <td className="py-2.5 px-3 font-mono font-bold text-slate-900 whitespace-nowrap">
+                          <span className={isCancelled ? 'line-through text-rose-700' : ''}>
+                            {r.number}
+                          </span>
+                          <span className="ml-1.5 text-[10px] font-normal text-slate-400">
+                            (#{r.progressive}/{r.year})
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono whitespace-nowrap">{r.issueDate}</td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          {isCancelled ? (
+                            <div>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold text-[10px]">
+                                ANNULLATA
+                              </span>
+                              {r.cancelReason && (
+                                <div className="text-[10px] text-rose-700 mt-0.5 max-w-[160px] truncate" title={r.cancelReason}>
+                                  Motivo: {r.cancelReason}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                              EMESSA
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-900">{r.payerName}</div>
+                          {r.payerFiscalCode && (
+                            <div className="font-mono text-[10px] text-slate-500">
+                              C.F. {r.payerFiscalCode}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-800">
+                            {r.participantName || '-'}
+                          </div>
+                          {r.participantFiscalCode && (
+                            <div className="font-mono text-[10px] text-slate-500">
+                              C.F. {r.participantFiscalCode}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-medium text-slate-800 max-w-xs truncate" title={r.description}>
+                            {r.description}
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            Metodo: <strong>{r.paymentMethod}</strong>
+                            {r.driveUrl && (
+                              <>
+                                {' • '}
+                                <a
+                                  href={r.driveUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-emerald-700 hover:underline inline-flex items-center gap-0.5 font-semibold"
+                                >
+                                  <span>PDF Drive</span>
+                                  <ExternalLink className="w-2.5 h-2.5" />
+                                </a>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 whitespace-nowrap">
+                          {formatEuro(r.amount)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1">
+                            {onReopenReceiptPdf && (
+                              <button
+                                type="button"
+                                onClick={() => onReopenReceiptPdf(r)}
+                                className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-[11px]"
+                                title="Riapri il documento PDF con lo stesso numero progressivo"
+                              >
+                                Riapri PDF
+                              </button>
+                            )}
+                            {onResendReceiptEmail && (
+                              <button
+                                type="button"
+                                onClick={() => onResendReceiptEmail(r)}
+                                className="px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 font-semibold text-[11px]"
+                                title="Riapri la ricevuta e prepara il reinvio tramite Gmail"
+                              >
+                                Reinvia Email
+                              </button>
+                            )}
+                            {!isCancelled && onCancelReceipt && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCancellingReceiptId(isCancellingThis ? null : r.id);
+                                  setCancelReasonInput('');
+                                }}
+                                className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold text-[11px] inline-flex items-center gap-1"
+                                title="Annulla ricevuta mantenendo la traccia del numero progressivo nel registro"
+                              >
+                                <Ban className="w-3 h-3" />
+                                <span>Annulla</span>
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {isCancellingThis && onCancelReceipt && (
+                        <tr className="bg-rose-50/90 border-b border-rose-200">
+                          <td colSpan={8} className="p-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                              <div className="text-[11px] text-rose-950 font-semibold">
+                                Annullamento Ricevuta N° <strong className="font-mono">{r.number}</strong> (il record rimarrà nel registro come ANNULLATA e il numero non verrà riutilizzato):
+                              </div>
+                              <div className="flex items-center gap-2 flex-1 max-w-lg">
+                                <input
+                                  type="text"
+                                  value={cancelReasonInput}
+                                  onChange={(e) => setCancelReasonInput(e.target.value)}
+                                  placeholder="Motivo obbligatorio (es. Errore importo / Dati errati)..."
+                                  className="flex-1 px-2.5 py-1 rounded border border-rose-300 bg-white text-xs"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={!cancelReasonInput.trim()}
+                                  onClick={() => {
+                                    if (!cancelReasonInput.trim()) return;
+                                    onCancelReceipt(r.id, cancelReasonInput.trim());
+                                    setCancellingReceiptId(null);
+                                    setCancelReasonInput('');
+                                    showToast(`Ricevuta N° ${r.number} contrassegnata come ANNULLATA.`);
+                                  }}
+                                  className="px-3 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white font-bold text-[11px] disabled:opacity-50 shrink-0"
+                                >
+                                  Conferma Annullamento
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setCancellingReceiptId(null)}
+                                  className="px-2 py-1 rounded bg-white text-slate-600 border border-slate-300 text-[11px]"
+                                >
+                                  Chiudi
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* ALWAYS-VISIBLE FILE INPUTS FOR TIMBRO DELL'ASD & FIRMA DEL PRESIDENTE (BASE64 PROFILE STORAGE) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Card 1: Timbro dell'ASD */}
@@ -644,8 +1196,8 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
                 </label>
               </div>
               <p className="text-xs text-slate-500">
-                Carica il file immagine (PNG/JPG) della Firma del Presidente. Viene memorizzata
-                come stringa Base64 nello stato del profilo.
+                Consigliato: carica la scansione della firma reale del Presidente (PNG/JPG). La
+                firma rimane disattivata di default finché non viene caricata o attivata.
               </p>
             </div>
             {signatureDataUrl ? (
@@ -679,9 +1231,10 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
               type="button"
               onClick={handleGenerateCalligraphicSignature}
               className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors"
+              title="Genera una scritta calligrafica dal nome del Presidente (solo estetica, non ha valore legale di firma)"
             >
-              <Wand2 className="w-3.5 h-3.5 text-blue-700" />
-              <span>Genera Firma Calligrafica</span>
+              <Wand2 className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+              <span>Firma grafica generata (solo estetica, non ha valore di firma)</span>
             </button>
             {signatureDataUrl && (
               <button
@@ -1462,7 +2015,7 @@ export const ReceiptConfigView: React.FC<ReceiptConfigViewProps> = ({
                             customLines: [
                               ...prev.customLines,
                               {
-                                id: `cl-${Date.now()}-${idx}`,
+                                id: newId('cl'),
                                 label: sug.label,
                                 value: sug.value,
                               },

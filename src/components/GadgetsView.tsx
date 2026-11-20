@@ -22,6 +22,8 @@ import {
   normalizePaymentMethod,
 } from '../utils/csvExcelImporter';
 import { generateReceiptEmailLink } from '../utils/export';
+import { todayIso, parseToIsoDate } from '../utils/dates';
+import { newId } from '../utils/ids';
 import { TransactionDateSelector } from './TransactionDateSelector';
 
 interface GadgetsViewProps {
@@ -70,7 +72,7 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
   const [registerInCashFlow, setRegisterInCashFlow] = useState(true);
   const [orderDateMode, setOrderDateMode] = useState<'today' | 'custom'>('today');
   const [orderCustomDate, setOrderCustomDate] = useState<string>(
-    () => new Date().toISOString().slice(0, 10)
+    () => todayIso()
   );
   const [notes, setNotes] = useState('');
 
@@ -108,14 +110,15 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
       return;
     }
     const g = gadgets.find((item) => item.id === selectedGadgetId);
-    const gadgetName = g ? g.name : 'Gadget Apuacamp';
+    const gadgetName = g ? g.name : 'Gadget Associativo';
     const totalPrice = (Number(quantity) || 1) * (Number(unitPrice) || 0);
     const effectiveOrderDate =
-      orderDateMode === 'today' ? new Date().toISOString().slice(0, 10) : orderCustomDate;
+      orderDateMode === 'today' ? todayIso() : orderCustomDate;
 
     onAddGadgetOrder(
       {
         date: effectiveOrderDate,
+        memberId: selectedMemberId || undefined,
         childName: childName.trim(),
         parentName: parentName.trim(),
         parentEmail: parentEmail.trim(),
@@ -170,7 +173,7 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
         return;
       }
       const imported: GadgetOrder[] = [];
-      rows.slice(1).forEach((r, idx) => {
+      rows.slice(1).forEach((r) => {
         const cName = (r[1] || r[0] || '').trim();
         if (!cName || cName.toLowerCase().includes('esempio')) return;
         const qty = parseInt(r[7] || '1', 10) || 1;
@@ -178,14 +181,14 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
         const paidFlag = (r[9] || '').toUpperCase().trim();
         const delivFlag = (r[10] || '').toUpperCase().trim();
         imported.push({
-          id: `go-imp-${Date.now()}-${idx}`,
-          date: r[0] && r[0].includes('-') ? r[0] : new Date().toISOString().slice(0, 10),
+          id: newId('go-imp'),
+          date: parseToIsoDate(r[0], profile.activeYear) || todayIso(),
           childName: cName,
           parentName: (r[2] || '').trim(),
           parentEmail: (r[3] || '').trim(),
           parentPhone: (r[4] || '').trim(),
           gadgetId: gadgets[0]?.id || 'gd-01',
-          gadgetName: (r[5] || 'Maglietta Apuacamp').trim(),
+          gadgetName: (r[5] || 'Maglietta Associativa').trim(),
           variant: (r[6] || 'Standard').trim(),
           quantity: qty,
           unitPrice: uPrice,
@@ -765,7 +768,7 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="Es. Borraccia Termica Apuacamp"
+                  placeholder="Es. Borraccia Termica Associativa"
                   value={newGadgetName}
                   onChange={(e) => setNewGadgetName(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200"

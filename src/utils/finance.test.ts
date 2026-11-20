@@ -517,7 +517,7 @@ describe('Excel / CSV & Google Form Importer + Custom Form/Receipt Templates', (
 
     const receiptCfg = resolveReceiptConfig();
     assert.equal(receiptCfg.showStamp, true);
-    assert.equal(receiptCfg.showSignature, true);
+    assert.equal(receiptCfg.showSignature, false);
     assert.ok(receiptCfg.legalTaxClause.includes('148'));
     assert.ok(Array.isArray(receiptCfg.dynamicFields));
     assert.ok((receiptCfg.dynamicFields?.length || 0) >= 3);

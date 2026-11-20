@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+import type * as XLSXTypes from 'xlsx';
 import {
   Member,
   CashTransaction,
@@ -7,8 +7,13 @@ import {
   InsuranceType,
   AgeGroup,
   CardValidityType,
+  CardTypeConfig,
+  AgeGroupConfig,
+  CashCategoryConfig,
 } from '../types';
 import { parseAmount } from './finance';
+import { newId } from './ids';
+import { todayIso, parseToIsoDate } from './dates';
 
 const ITALIAN_MONTHS_MAP: Record<string, string> = {
   gen: '01',
@@ -263,7 +268,9 @@ export function tryParseTransactionDate(
 }
 
 export function normalizeTransactionDate(raw: string, fallbackYear: number = 2027): string {
-  return tryParseTransactionDate(raw, fallbackYear) || `${fallbackYear}-01-01`;
+  const iso = tryParseTransactionDate(raw, fallbackYear) || parseToIsoDate(raw, fallbackYear);
+  if (iso) return iso;
+  return (raw || '').trim();
 }
 
 export function normalizeBirthOrExpiryDate(raw: string): string {
@@ -273,23 +280,62 @@ export function normalizeBirthOrExpiryDate(raw: string): string {
   return fixedTypo;
 }
 
-export function normalizeInsuranceType(raw: string): InsuranceType {
+export function normalizeInsuranceType(
+  raw: string,
+  customTypes?: CardTypeConfig[]
+): InsuranceType {
   const lower = (raw || '').toLowerCase().trim();
+  if (lower && Array.isArray(customTypes) && customTypes.length > 0) {
+    const exactMatch = customTypes.find(
+      (ct) => ct.id.toLowerCase() === lower || ct.label.toLowerCase() === lower
+    );
+    if (exactMatch) return exactMatch.id;
+    const partialMatch = customTypes.find(
+      (ct) =>
+        lower.includes(ct.id.toLowerCase()) || lower.includes(ct.label.toLowerCase())
+    );
+    if (partialMatch) return partialMatch.id;
+  }
   if (lower.includes('platinum') || lower.includes('platinu')) return 'Platinum';
   if (lower.includes('gold')) return 'Gold';
   if (lower.includes('summer')) return 'Summer';
   return 'Base';
 }
 
-export function normalizeAgeGroup(raw: string): AgeGroup {
+export function normalizeAgeGroup(
+  raw: string,
+  customGroups?: AgeGroupConfig[]
+): AgeGroup {
   const clean = (raw || '').trim();
+  const lower = clean.toLowerCase();
+  if (lower && Array.isArray(customGroups) && customGroups.length > 0) {
+    const exactMatch = customGroups.find(
+      (ag) => ag.id.toLowerCase() === lower || ag.label.toLowerCase() === lower
+    );
+    if (exactMatch) return exactMatch.id;
+    const partialMatch = customGroups.find(
+      (ag) =>
+        lower.includes(ag.id.toLowerCase()) || lower.includes(ag.label.toLowerCase())
+    );
+    if (partialMatch) return partialMatch.id;
+  }
   if (clean.includes('3-6')) return '3-6';
   if (clean.includes('11-14')) return '11-14';
+  if (lower.includes('adult')) return 'Adulti';
   return '6-11';
 }
 
-export function normalizeCashCategory(raw: string): CashCategory {
+export function normalizeCashCategory(
+  raw: string,
+  customCategories?: CashCategoryConfig[]
+): CashCategory {
   const lower = (raw || '').toLowerCase().trim();
+  if (lower && Array.isArray(customCategories) && customCategories.length > 0) {
+    const exactMatch = customCategories.find(
+      (cc) => cc.id.toLowerCase() === lower || cc.label.toLowerCase() === lower
+    );
+    if (exactMatch) return exactMatch.id;
+  }
   if (lower.includes('summer') || lower.includes('campo estivo') || lower.includes('campi estivi'))
     return 'SummerCamp';
   if (lower.includes('evento') || lower.includes('rifugio') || lower.includes('escursion'))
@@ -332,7 +378,10 @@ export function normalizePaymentMethod(raw: string): PaymentMethod {
  * - Exact ISO dates ("YYYY-MM-DD") for Excel date cells (avoiding US MM/DD/YY formatting bugs)
  * - Exact numeric values (e.g. "1203" or "1203.5") for Excel numeric cells (avoiding ".00" or thousand separator bugs)
  */
-function extractCleanRowsFromWorksheet(sheet: XLSX.WorkSheet): string[][] {
+function extractCleanRowsFromWorksheet(
+  XLSX: typeof XLSXTypes,
+  sheet: XLSXTypes.WorkSheet
+): string[][] {
   const ref = sheet['!ref'];
   if (!ref) return [];
   const range = XLSX.utils.decode_range(ref);
@@ -345,7 +394,7 @@ function extractCleanRowsFromWorksheet(sheet: XLSX.WorkSheet): string[][] {
     let hasNonEmpty = false;
     for (let c = range.s.c; c <= maxCol; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
-      const cell = sheet[addr] as XLSX.CellObject | undefined;
+      const cell = sheet[addr] as XLSXTypes.CellObject | undefined;
       if (!cell || cell.v === undefined || cell.v === null) {
         rowCells.push('');
         continue;
@@ -393,6 +442,7 @@ function extractCleanRowsFromWorksheet(sheet: XLSX.WorkSheet): string[][] {
  * Automatically picks the best worksheet if the workbook has multiple tabs (e.g. skips "Riepilogo_Bilancio" and picks "Libro_Cassa").
  */
 export async function readUploadedSpreadsheetRows(file: File): Promise<string[][]> {
+  const XLSX = await import('xlsx');
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: false, cellNF: true });
   if (!workbook.SheetNames || workbook.SheetNames.length === 0) return [];
@@ -421,7 +471,7 @@ export async function readUploadedSpreadsheetRows(file: File): Promise<string[][
       // Fallback: inspect first 15 rows of each sheet for transaction or member headers
       for (const name of workbook.SheetNames) {
         if (name.toLowerCase().includes('riepilogo')) continue;
-        const candidateRows = extractCleanRowsFromWorksheet(workbook.Sheets[name]);
+        const candidateRows = extractCleanRowsFromWorksheet(XLSX, workbook.Sheets[name]);
         const headText = candidateRows
           .slice(0, 15)
           .map((r) => r.join(' ').toLowerCase())
@@ -441,7 +491,7 @@ export async function readUploadedSpreadsheetRows(file: File): Promise<string[][
   }
 
   const sheet = workbook.Sheets[chosenSheetName];
-  return extractCleanRowsFromWorksheet(sheet);
+  return extractCleanRowsFromWorksheet(XLSX, sheet);
 }
 
 /**
@@ -465,7 +515,7 @@ export function parseMembersFromRows(rows: string[][]): Member[] {
   const dataRows = rows.slice(headerRowIdx + 1);
   const members: Member[] = [];
 
-  dataRows.forEach((row, idx) => {
+  dataRows.forEach((row) => {
     const childName = (row[0] || '').trim();
     if (
       !childName ||
@@ -514,7 +564,7 @@ export function parseMembersFromRows(rows: string[][]): Member[] {
       notesConditions.toLowerCase().includes('level up');
 
     members.push({
-      id: `m-imp-${Date.now()}-${idx}`,
+      id: newId('m-imp'),
       childName,
       birthDate,
       birthPlace,
@@ -558,8 +608,8 @@ export function parseMembersFromGoogleFormResponses(
     const r = responses[i];
     const responseId = r._responseId || '';
     const submittedAt = r._submittedAt
-      ? r._submittedAt.slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
+      ? parseToIsoDate(r._submittedAt) || r._submittedAt.slice(0, 10)
+      : todayIso();
 
     const consumedKeys = new Set<string>(['_responseId', '_submittedAt']);
 
@@ -685,7 +735,7 @@ export function parseMembersFromGoogleFormResponses(
       .join(' | ');
 
     added.push({
-      id: `m-gform-${Date.now()}-${i}`,
+      id: newId('m-gform'),
       childName,
       birthDate,
       birthPlace,
@@ -835,9 +885,9 @@ export function parseTransactionsFromRows(
 
   const dataRows = rows.slice(headerRowIdx + 1);
   const transactions: CashTransaction[] = [];
-  let lastValidDate = `${defaultYear}-01-01`;
+  let lastValidDate = '';
 
-  dataRows.forEach((row, idx) => {
+  dataRows.forEach((row) => {
     if (!row || row.length === 0) return;
 
     const nonEmptyCells = row.map((c) => (c || '').trim()).filter(Boolean);
@@ -860,11 +910,16 @@ export function parseTransactionsFromRows(
 
     // Parse date from dateCol; if empty or not found in dateCol, check adjacent cells or carry forward lastValidDate
     const rawDateCell = (row[dateCol] || '').trim();
-    let parsedDate = tryParseTransactionDate(rawDateCell, defaultYear);
+    let parsedDate =
+      tryParseTransactionDate(rawDateCell, defaultYear) ||
+      parseToIsoDate(rawDateCell, defaultYear);
     if (!parsedDate) {
       for (let c = 0; c < Math.min(3, row.length); c++) {
         if (c === incCol || c === expCol || c === singleAmountCol) continue;
-        const candidate = tryParseTransactionDate((row[c] || '').trim(), defaultYear);
+        const cellCandidate = (row[c] || '').trim();
+        const candidate =
+          tryParseTransactionDate(cellCandidate, defaultYear) ||
+          parseToIsoDate(cellCandidate, defaultYear);
         if (candidate) {
           parsedDate = candidate;
           break;
@@ -875,7 +930,8 @@ export function parseTransactionsFromRows(
     if (parsedDate) {
       lastValidDate = parsedDate;
     }
-    const effectiveDate = parsedDate || lastValidDate;
+    const hadUnrecognizedNonEmptyDate = Boolean(rawDateCell && !parsedDate);
+    const effectiveDate = parsedDate || lastValidDate || todayIso();
 
     // Parse amounts
     let inc = 0;
@@ -928,14 +984,19 @@ export function parseTransactionsFromRows(
       finalDesc = extraTextParts.join(' - ');
     }
 
+    const baseDescription = finalDesc || rawCat || 'Movimento importato';
+    const descriptionWithDateWarning = hadUnrecognizedNonEmptyDate
+      ? `${baseDescription} [Data da verificare: "${rawDateCell}"]`
+      : baseDescription;
+
     transactions.push({
-      id: `tx-imp-${Date.now()}-${idx}`,
+      id: newId('tx-imp'),
       date: effectiveDate,
       category: normalizeCashCategory(rawCat || finalDesc),
       income: inc > 0 ? inc : null,
       expense: exp > 0 ? exp : null,
       method: normalizePaymentMethod(rawMethod),
-      description: finalDesc || rawCat || 'Movimento importato',
+      description: descriptionWithDateWarning,
     });
   });
 
@@ -945,7 +1006,16 @@ export function parseTransactionsFromRows(
 /**
  * Downloads an empty Excel (.xlsx) template ready to be filled and uploaded
  */
-export function downloadEmptyExcelTemplate(type: 'soci' | 'cassa' | 'eventi' | 'gadget') {
+export async function downloadEmptyExcelTemplate(
+  type: 'soci' | 'cassa' | 'eventi' | 'gadget',
+  associationName?: string
+): Promise<void> {
+  const XLSX = await import('xlsx');
+  const safeSlug =
+    (associationName || 'ASD')
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'ASD';
   let headers: string[] = [];
   let sampleRow: string[] = [];
   let filename = '';
@@ -953,7 +1023,7 @@ export function downloadEmptyExcelTemplate(type: 'soci' | 'cassa' | 'eventi' | '
 
   if (type === 'soci') {
     sheetName = 'Modello_Soci_2027';
-    filename = 'Modello_Vuoto_Soci_Apuacamp_2027.xlsx';
+    filename = `Modello_Vuoto_Soci_${safeSlug}_2027.xlsx`;
     headers = [
       'Nome Bimbo/a',
       'Data Nascita (GG/MM/AAAA)',
@@ -965,7 +1035,7 @@ export function downloadEmptyExcelTemplate(type: 'soci' | 'cassa' | 'eventi' | '
       'Codice Fiscale Genitore',
       'Telefono Genitore',
       'Email Genitore',
-      'Num Tessera UsAcli',
+      'Num Tessera Ente',
       'Pagata (SI/NO)',
       'Scadenza Tessera (GG/MM/AAAA)',
       'Tipo Assicurazione (Base/Summer/Gold/Platinum)',
@@ -998,7 +1068,7 @@ export function downloadEmptyExcelTemplate(type: 'soci' | 'cassa' | 'eventi' | '
     ];
   } else if (type === 'cassa') {
     sheetName = 'Modello_Cassa_2027';
-    filename = 'Modello_Vuoto_Cassa_Apuacamp_2027.xlsx';
+    filename = `Modello_Vuoto_Cassa_${safeSlug}_2027.xlsx`;
     headers = [
       'Data (AAAA-MM-GG o GG/MM/AAAA)',
       'Categoria (Evento / SummerCamp / Selva / Tessere / Staff / Tasse e Formalità / Servizi esterni / Acquisto Strumenti / Gadget / Marketing / Bandi e Fondi Pubbl / Donazioni enti)',
@@ -1017,7 +1087,7 @@ export function downloadEmptyExcelTemplate(type: 'soci' | 'cassa' | 'eventi' | '
     ];
   } else if (type === 'eventi') {
     sheetName = 'Modello_Iscritti_Evento';
-    filename = 'Modello_Vuoto_Iscritti_Evento_2027.xlsx';
+    filename = `Modello_Vuoto_Iscritti_Evento_${safeSlug}_2027.xlsx`;
     headers = [
       'Nome Bimbo/a',
       'Genitore / Tutore',
@@ -1046,7 +1116,7 @@ export function downloadEmptyExcelTemplate(type: 'soci' | 'cassa' | 'eventi' | '
     ];
   } else {
     sheetName = 'Modello_Prenotazioni_Gadget';
-    filename = 'Modello_Vuoto_Gadget_Apuacamp_2027.xlsx';
+    filename = `Modello_Vuoto_Gadget_${safeSlug}_2027.xlsx`;
     headers = [
       'Data',
       'Nome Bimbo/a',
@@ -1068,7 +1138,7 @@ export function downloadEmptyExcelTemplate(type: 'soci' | 'cassa' | 'eventi' | '
       'Laura Bianchi',
       'laura@example.com',
       '3331234567',
-      'Maglietta Apuacamp',
+      'Maglietta Associativa',
       'Taglia 9-11 anni',
       '1',
       '15,00',

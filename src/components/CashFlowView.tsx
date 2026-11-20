@@ -26,12 +26,18 @@ import {
   CashTransaction,
   CashCategory,
   PaymentMethod,
+  PaymentAccountId,
+  CustomPaymentAccount,
+  StaffPaymentKind,
   Member,
+  StaffMember,
   AssociationProfile,
   DuplicateTransactionGroup,
   RecurringExpensePlan,
 } from '../types';
 import { formatEuro, calculateCashTotals, parseAmount } from '../utils/finance';
+import { todayIso } from '../utils/dates';
+import { newId } from '../utils/ids';
 import { RecurringExpensesPanel } from './RecurringExpensesPanel';
 import { TransactionDateSelector } from './TransactionDateSelector';
 import {
@@ -52,6 +58,7 @@ import {
 interface CashFlowViewProps {
   transactions: CashTransaction[];
   members: Member[];
+  staff?: StaffMember[];
   profile: AssociationProfile;
   googleUserEmail: string | null;
   initialFund: number;
@@ -84,6 +91,8 @@ interface CashFlowViewProps {
   onUpdateProfile: (profile: AssociationProfile) => void;
   onOpenReceiptModalForTransaction: (tx: CashTransaction) => void;
   onNavigateToArchive?: () => void;
+  onOpenReceiptsRegistry?: () => void;
+  receiptsCount?: number;
   canUndo?: boolean;
   lastUndoLabel?: string | null;
   onUndo?: () => void;
@@ -93,6 +102,8 @@ interface CashFlowViewProps {
 
 export const CashFlowView: React.FC<CashFlowViewProps> = ({
   transactions,
+  members,
+  staff = [],
   profile,
   googleUserEmail,
   initialFund,
@@ -114,6 +125,8 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
   onUpdateProfile,
   onOpenReceiptModalForTransaction,
   onNavigateToArchive,
+  onOpenReceiptsRegistry,
+  receiptsCount = 0,
   canUndo = false,
   lastUndoLabel = null,
   onUndo,
@@ -144,6 +157,11 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
   const [editAmount, setEditAmount] = useState<string>('');
   const [editCategory, setEditCategory] = useState<CashCategory>('Evento');
   const [editMethod, setEditMethod] = useState<PaymentMethod>('Bonifico');
+  const [editAccountId, setEditAccountId] = useState<PaymentAccountId | ''>('');
+  const [editMemberId, setEditMemberId] = useState<string>('');
+  const [editStaffId, setEditStaffId] = useState<string>('');
+  const [editStaffPaymentKind, setEditStaffPaymentKind] =
+    useState<StaffPaymentKind>('compenso_sportivo');
   const [editDescription, setEditDescription] = useState<string>('');
 
   // Set of transaction IDs involved in any duplicate group
@@ -171,22 +189,44 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
     [duplicateGroups]
   );
 
-  // Edit Initial Fund Modal
+  // Edit Initial Fund & Payment Accounts Modal
   const [isFundModalOpen, setIsFundModalOpen] = useState(false);
   const [editBank, setEditBank] = useState(String(initialFundBank));
   const [editCash, setEditCash] = useState(String(initialFundCash));
+  const [editPaypal, setEditPaypal] = useState(String(profile.initialFundPaypal || 0));
+  const [editCustomAccounts, setEditCustomAccounts] = useState<CustomPaymentAccount[]>(
+    profile.customPaymentAccounts || []
+  );
+  const [newCustomAccName, setNewCustomAccName] = useState('');
+  const [newCustomAccInitial, setNewCustomAccInitial] = useState('0');
 
   // Modal State for adding transaction
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newDateMode, setNewDateMode] = useState<'today' | 'custom'>('today');
-  const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [newDate, setNewDate] = useState(() => todayIso());
   const [newCategory, setNewCategory] = useState<CashCategory>('Evento');
   const [newMethod, setNewMethod] = useState<PaymentMethod>('Bonifico');
+  const [newAccountId, setNewAccountId] = useState<PaymentAccountId | ''>('');
+  const [newMemberId, setNewMemberId] = useState<string>('');
+  const [newStaffId, setNewStaffId] = useState<string>('');
+  const [newStaffPaymentKind, setNewStaffPaymentKind] =
+    useState<StaffPaymentKind>('compenso_sportivo');
   const [newType, setNewType] = useState<'income' | 'expense'>('income');
   const [newAmount, setNewAmount] = useState<string>('');
   const [newDescription, setNewDescription] = useState<string>('');
 
-  const totals = calculateCashTotals(transactions, initialFund, initialFundBank, initialFundCash);
+  const totals = calculateCashTotals(
+    transactions,
+    initialFund,
+    initialFundBank,
+    initialFundCash,
+    {
+      initialPaypal: profile.initialFundPaypal || 0,
+      paymentAccounts: profile.paymentAccounts,
+      paypalExpenseSourceAccount: profile.paypalExpenseSourceAccount,
+      customPaymentAccounts: profile.customPaymentAccounts,
+    }
+  );
 
   const categories: CashCategory[] = [
     'Evento',
@@ -304,6 +344,17 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
     setEditAmount(String(isInc ? tx.income : tx.expense || 0));
     setEditCategory(tx.category);
     setEditMethod(tx.method);
+    setEditAccountId(
+      tx.accountId ||
+        (tx.method === 'Paypal'
+          ? isInc
+            ? 'paypal'
+            : profile.paypalExpenseSourceAccount || 'banca'
+          : '')
+    );
+    setEditMemberId(tx.memberId || '');
+    setEditStaffId(tx.staffId || '');
+    setEditStaffPaymentKind(tx.staffPaymentKind || 'compenso_sportivo');
     setEditDescription(tx.description);
   };
 
@@ -313,11 +364,32 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
     const parsed = parseAmount(editAmount);
     if (parsed <= 0 || !editDescription.trim()) return;
 
+    const linkedMember = editMemberId
+      ? members.find((m) => m.id === editMemberId)
+      : undefined;
+    const effectiveAccountId: PaymentAccountId | undefined =
+      editMethod === 'Paypal'
+        ? editAccountId ||
+          (editType === 'expense'
+            ? profile.paypalExpenseSourceAccount || 'banca'
+            : 'paypal')
+        : editAccountId || undefined;
+
     onUpdateTransaction({
       ...editingTx,
       date: editDate || editingTx.date,
       category: editCategory,
       method: editMethod,
+      accountId: effectiveAccountId,
+      memberId: editMemberId || undefined,
+      relatedMemberName: linkedMember
+        ? linkedMember.childName
+        : editMemberId
+        ? editingTx.relatedMemberName
+        : undefined,
+      staffId: editCategory === 'Staff' && editStaffId ? editStaffId : undefined,
+      staffPaymentKind:
+        editCategory === 'Staff' && editStaffId ? editStaffPaymentKind : undefined,
       income: editType === 'income' ? parsed : null,
       expense: editType === 'expense' ? parsed : null,
       description: editDescription.trim(),
@@ -336,12 +408,29 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
     if (isNaN(parsed) || parsed <= 0 || !newDescription.trim()) return;
 
     const effectiveDate =
-      newDateMode === 'today' ? new Date().toISOString().slice(0, 10) : newDate;
+      newDateMode === 'today' ? todayIso() : newDate;
+
+    const linkedMember = newMemberId
+      ? members.find((m) => m.id === newMemberId)
+      : undefined;
+    const effectiveAccountId: PaymentAccountId | undefined =
+      newMethod === 'Paypal'
+        ? newAccountId ||
+          (newType === 'expense'
+            ? profile.paypalExpenseSourceAccount || 'banca'
+            : 'paypal')
+        : newAccountId || undefined;
 
     onAddTransaction({
       date: effectiveDate,
       category: newCategory,
       method: newMethod,
+      accountId: effectiveAccountId,
+      memberId: newMemberId || undefined,
+      relatedMemberName: linkedMember ? linkedMember.childName : undefined,
+      staffId: newCategory === 'Staff' && newStaffId ? newStaffId : undefined,
+      staffPaymentKind:
+        newCategory === 'Staff' && newStaffId ? newStaffPaymentKind : undefined,
       income: newType === 'income' ? parsed : null,
       expense: newType === 'expense' ? parsed : null,
       description: newDescription.trim(),
@@ -350,16 +439,31 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
     setIsAddModalOpen(false);
     setNewAmount('');
     setNewDescription('');
+    setNewAccountId('');
+    setNewMemberId('');
+    setNewStaffId('');
   };
 
   const handleSaveFunds = (e: React.FormEvent) => {
     e.preventDefault();
     const b = parseAmount(editBank);
     const c = parseAmount(editCash);
+    const p = parseAmount(editPaypal);
+    const customTotal = editCustomAccounts.reduce(
+      (sum, acc) => sum + (Number.isFinite(acc.initialBalance) ? acc.initialBalance : 0),
+      0
+    );
+    const totalInit = Math.round((b + c + p + customTotal) * 100) / 100;
     onUpdateInitialFunds({
-      initialFund: Math.round((b + c) * 100) / 100,
+      initialFund: totalInit,
       initialFundBank: b,
       initialFundCash: c,
+    });
+    onUpdateProfile({
+      ...profile,
+      initialFundPaypal: p,
+      customPaymentAccounts: editCustomAccounts,
+      initialFundMismatchNotice: undefined,
     });
     setIsFundModalOpen(false);
   };
@@ -758,6 +862,18 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                 </button>
               )}
 
+              {onOpenReceiptsRegistry && (
+                <button
+                  type="button"
+                  onClick={onOpenReceiptsRegistry}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors"
+                  title="Apri il Registro Progressivo delle Ricevute Emesse e verifica la numerazione per il 730"
+                >
+                  <Printer className="w-3.5 h-3.5 text-indigo-700" />
+                  <span>Registro Ricevute ({receiptsCount})</span>
+                </button>
+              )}
+
               {onNavigateToArchive && (
                 <button
                   onClick={onNavigateToArchive}
@@ -878,6 +994,32 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         </div>
       )}
 
+      {/* One-time notice if initialFund was realigned during migration */}
+      {profile.initialFundMismatchNotice && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs text-amber-950">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+            <span>
+              Il Fondo Iniziale totale è stato riallineato automaticamente alla somma dei conti (da{' '}
+              {formatEuro(profile.initialFundMismatchNotice.oldInitialFund)} a{' '}
+              {formatEuro(profile.initialFundMismatchNotice.realignedInitialFund)}).
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateProfile({
+                ...profile,
+                initialFundMismatchNotice: undefined,
+              })
+            }
+            className="text-amber-800 hover:text-amber-950 font-bold px-2 py-0.5 rounded hover:bg-amber-100 shrink-0"
+          >
+            Ho capito ✕
+          </button>
+        </div>
+      )}
+
       {/* Financial Health Summary Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
         <div>
@@ -886,7 +1028,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
             {formatEuro(totals.currentTotal)}
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
-            Fondo iniziale: {formatEuro(initialFund)}
+            Fondo iniziale: {formatEuro(totals.initialFund)}
           </div>
         </div>
         <div>
@@ -901,25 +1043,35 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
             {formatEuro(totals.totalExpense)}
           </div>
         </div>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <div>
-            <div className="text-[11px] text-slate-500 font-medium">Disponibilità C/C + Cassa</div>
-            <div className="text-xs font-mono text-slate-700 mt-1 flex flex-col">
-              <span>Banca: {formatEuro(totals.currentBank)}</span>
+            <div className="text-[11px] text-slate-500 font-medium">
+              Disponibilità per Conto (C/C, PayPal, Cassa)
+            </div>
+            <div className="text-[11px] font-mono text-slate-700 mt-1 flex flex-col gap-0.5">
+              <span>Banca (C/C): {formatEuro(totals.currentBank)}</span>
+              <span>PayPal: {formatEuro(totals.currentPaypal)}</span>
               <span>Contanti: {formatEuro(totals.currentCash)}</span>
+              {(totals.customAccountBalances || []).map((ca) => (
+                <span key={ca.id}>
+                  {ca.name}: {formatEuro(ca.currentBalance)}
+                </span>
+              ))}
             </div>
           </div>
           <button
             onClick={() => {
               setEditBank(String(initialFundBank));
               setEditCash(String(initialFundCash));
+              setEditPaypal(String(profile.initialFundPaypal || 0));
+              setEditCustomAccounts(profile.customPaymentAccounts || []);
               setIsFundModalOpen(true);
             }}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-            title="Imposta il fondo cassa di partenza"
+            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors shrink-0"
+            title="Imposta il fondo cassa di partenza e i conti di pagamento"
           >
             <Edit3 className="w-3 h-3" />
-            <span>Fondo Iniziale</span>
+            <span>Fondo &amp; Conti</span>
           </button>
         </div>
       </div>
@@ -1067,7 +1219,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
             id="btn-cashflow-add-transaction"
             onClick={() => {
               setNewDateMode('today');
-              setNewDate(new Date().toISOString().slice(0, 10));
+              setNewDate(todayIso());
               setIsAddModalOpen(true);
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition-all shadow-xs"
@@ -1419,7 +1571,19 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                   </label>
                   <select
                     value={editMethod}
-                    onChange={(e) => setEditMethod(e.target.value as PaymentMethod)}
+                    onChange={(e) => {
+                      const nextM = e.target.value as PaymentMethod;
+                      setEditMethod(nextM);
+                      if (nextM === 'Paypal') {
+                        setEditAccountId(
+                          editType === 'expense'
+                            ? profile.paypalExpenseSourceAccount || 'banca'
+                            : 'paypal'
+                        );
+                      } else {
+                        setEditAccountId('');
+                      }
+                    }}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
                   >
                     {methods.map((m) => (
@@ -1430,6 +1594,107 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                   </select>
                 </div>
               </div>
+
+              {(editMethod === 'Paypal' ||
+                (profile.customPaymentAccounts && profile.customPaymentAccounts.length > 0)) && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1.5">
+                  <label className="block text-slate-800 font-semibold">
+                    {editMethod === 'Paypal'
+                      ? editType === 'expense'
+                        ? 'Strumento di pagamento usato dentro PayPal (da quale conto esce?)'
+                        : 'Conto di destinazione entrata PayPal'
+                      : 'Conto su cui registrare il movimento'}
+                  </label>
+                  <select
+                    value={
+                      editAccountId ||
+                      (editMethod === 'Paypal'
+                        ? editType === 'expense'
+                          ? profile.paypalExpenseSourceAccount || 'banca'
+                          : 'paypal'
+                        : editMethod === 'Contanti'
+                        ? 'cassa'
+                        : 'banca')
+                    }
+                    onChange={(e) => setEditAccountId(e.target.value as PaymentAccountId)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    <option value="banca">
+                      Conto Corrente Bancario (carta/IBAN collegato - predefinito per uscite)
+                    </option>
+                    <option value="paypal">Saldo Conto PayPal</option>
+                    <option value="cassa">Cassa Contanti</option>
+                    {(profile.customPaymentAccounts || []).map((ca) => (
+                      <option key={ca.id} value={ca.id}>
+                        {ca.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Socio collegato (opzionale)
+                  </label>
+                  <select
+                    value={editMemberId}
+                    onChange={(e) => setEditMemberId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    <option value="">-- Nessun socio collegato --</option>
+                    {members.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.childName}{' '}
+                        {m.membershipCardNumber ? `(Tess. ${m.membershipCardNumber})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {editCategory === 'Staff' && staff.length > 0 && (
+                  <div>
+                    <label className="block text-slate-700 font-medium mb-1">
+                      Collaboratore sportivo collegato
+                    </label>
+                    <select
+                      value={editStaffId}
+                      onChange={(e) => setEditStaffId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                    >
+                      <option value="">-- Nessun collaboratore --</option>
+                      {staff.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.role})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {editCategory === 'Staff' && editStaffId && (
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Natura erogazione collaboratore (D.Lgs. 36/2021)
+                  </label>
+                  <select
+                    value={editStaffPaymentKind}
+                    onChange={(e) =>
+                      setEditStaffPaymentKind(e.target.value as StaffPaymentKind)
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    <option value="compenso_sportivo">
+                      Compenso sportivo / collaboratore (concorre alle soglie 5.000 € / 15.000 €)
+                    </option>
+                    <option value="rimborso_spese">
+                      Rimborso spese documentato / piè di lista (escluso dalle soglie)
+                    </option>
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="block text-slate-700 font-medium mb-1">
@@ -1466,13 +1731,13 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         </div>
       )}
 
-      {/* Edit Initial Fund Modal */}
+      {/* Edit Initial Fund & Payment Accounts Modal */}
       {isFundModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
               <h3 className="font-bold text-slate-900 text-base">
-                Imposta Fondo Cassa Iniziale ({profile.activeYear})
+                Fondo Cassa Iniziale &amp; Conti ({profile.activeYear})
               </h3>
               <button
                 onClick={() => setIsFundModalOpen(false)}
@@ -1484,34 +1749,141 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
 
             <form onSubmit={handleSaveFunds} className="space-y-4 text-xs">
               <p className="text-slate-500 leading-relaxed">
-                Imposta la liquidità iniziale di apertura esercizio (oppure clicca su "Usa Saldo
-                Finale 2026" per riportare il saldo attivo di € 11.805,47).
+                Imposta i saldi iniziali di apertura esercizio per Conto Corrente Bancario, Cassa
+                Contanti, Conto PayPal ed eventuali altri conti o carte dell&apos;associazione. Il
+                fondo iniziale totale è sempre pari alla somma dei conti.
               </p>
 
-              <div>
-                <label className="block text-slate-700 font-medium mb-1">
-                  Fondo Iniziale Conto Corrente Bancario (€)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={editBank}
-                  onChange={(e) => setEditBank(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Conto Corrente Bancario (€)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editBank}
+                    onChange={(e) => setEditBank(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Conto PayPal (€)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editPaypal}
+                    onChange={(e) => setEditPaypal(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Cassa Contanti (€)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editCash}
+                    onChange={(e) => setEditCash(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block text-slate-700 font-medium mb-1">
-                  Fondo Iniziale Cassa Contanti (€)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={editCash}
-                  onChange={(e) => setEditCash(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
-                />
+              {/* Custom additional accounts (e.g. Second Bank Account, Prepaid Card) */}
+              <div className="border-t border-slate-100 pt-3 space-y-2.5">
+                <div className="font-bold text-slate-800">
+                  Altri Conti / Metodi Personalizzati (es. Secondo C/C, Carta Prepagata)
+                </div>
+
+                {editCustomAccounts.length > 0 && (
+                  <div className="space-y-2">
+                    {editCustomAccounts.map((acc, idx) => (
+                      <div
+                        key={acc.id}
+                        className="flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200"
+                      >
+                        <input
+                          type="text"
+                          value={acc.name}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEditCustomAccounts((prev) =>
+                              prev.map((item, i) => (i === idx ? { ...item, name: val } : item))
+                            );
+                          }}
+                          className="flex-1 px-2.5 py-1.5 rounded border border-slate-200 bg-white"
+                          placeholder="Nome conto"
+                        />
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={acc.initialBalance}
+                          onChange={(e) => {
+                            const val = parseAmount(e.target.value);
+                            setEditCustomAccounts((prev) =>
+                              prev.map((item, i) =>
+                                i === idx ? { ...item, initialBalance: val } : item
+                              )
+                            );
+                          }}
+                          className="w-28 px-2.5 py-1.5 rounded border border-slate-200 bg-white font-mono"
+                          placeholder="Fondo €"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditCustomAccounts((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                          className="p-1.5 text-slate-400 hover:text-rose-600 rounded"
+                          title="Rimuovi conto"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Es. Secondo Conto / Carta Prepagata"
+                    value={newCustomAccName}
+                    onChange={(e) => setNewCustomAccName(e.target.value)}
+                    className="flex-1 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="Fondo €"
+                    value={newCustomAccInitial}
+                    onChange={(e) => setNewCustomAccInitial(e.target.value)}
+                    className="w-24 px-2.5 py-1.5 rounded-lg border border-slate-200 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!newCustomAccName.trim()) return;
+                      const created: CustomPaymentAccount = {
+                        id: newId('acc'),
+                        name: newCustomAccName.trim(),
+                        initialBalance: parseAmount(newCustomAccInitial),
+                      };
+                      setEditCustomAccounts((prev) => [...prev, created]);
+                      setNewCustomAccName('');
+                      setNewCustomAccInitial('0');
+                    }}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-lg shrink-0"
+                  >
+                    + Aggiungi Conto
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-center justify-between pt-2">
@@ -1520,6 +1892,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                   onClick={() => {
                     setEditBank('10539.47');
                     setEditCash('1266.00');
+                    setEditPaypal('0');
                   }}
                   className="text-emerald-700 hover:underline font-semibold"
                 >
@@ -1530,6 +1903,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                   onClick={() => {
                     setEditBank('0');
                     setEditCash('0');
+                    setEditPaypal('0');
                   }}
                   className="text-rose-600 hover:underline font-medium"
                 >
@@ -1549,7 +1923,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                   type="submit"
                   className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-semibold"
                 >
-                  Salva Fondo Iniziale
+                  Salva Fondo &amp; Conti
                 </button>
               </div>
             </form>
@@ -1560,7 +1934,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
       {/* Add Transaction Modal */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
               <h3 className="font-bold text-slate-900 text-base">
                 Registra Nuovo Movimento Cassa
@@ -1577,7 +1951,10 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
               <div className="flex rounded-lg border border-slate-200 p-1 bg-slate-50">
                 <button
                   type="button"
-                  onClick={() => setNewType('income')}
+                  onClick={() => {
+                    setNewType('income');
+                    if (newMethod === 'Paypal') setNewAccountId('paypal');
+                  }}
                   className={`flex-1 py-2 rounded-md font-semibold text-center transition-all ${
                     newType === 'income'
                       ? 'bg-emerald-700 text-white shadow-xs'
@@ -1588,7 +1965,12 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setNewType('expense')}
+                  onClick={() => {
+                    setNewType('expense');
+                    if (newMethod === 'Paypal') {
+                      setNewAccountId(profile.paypalExpenseSourceAccount || 'banca');
+                    }
+                  }}
                   className={`flex-1 py-2 rounded-md font-semibold text-center transition-all ${
                     newType === 'expense'
                       ? 'bg-rose-700 text-white shadow-xs'
@@ -1643,7 +2025,19 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                   </label>
                   <select
                     value={newMethod}
-                    onChange={(e) => setNewMethod(e.target.value as PaymentMethod)}
+                    onChange={(e) => {
+                      const nextM = e.target.value as PaymentMethod;
+                      setNewMethod(nextM);
+                      if (nextM === 'Paypal') {
+                        setNewAccountId(
+                          newType === 'expense'
+                            ? profile.paypalExpenseSourceAccount || 'banca'
+                            : 'paypal'
+                        );
+                      } else {
+                        setNewAccountId('');
+                      }
+                    }}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
                   >
                     {methods.map((m) => (
@@ -1654,6 +2048,107 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                   </select>
                 </div>
               </div>
+
+              {(newMethod === 'Paypal' ||
+                (profile.customPaymentAccounts && profile.customPaymentAccounts.length > 0)) && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1.5">
+                  <label className="block text-slate-800 font-semibold">
+                    {newMethod === 'Paypal'
+                      ? newType === 'expense'
+                        ? 'Strumento di pagamento usato dentro PayPal (da quale conto esce?)'
+                        : 'Conto di destinazione entrata PayPal'
+                      : 'Conto su cui registrare il movimento'}
+                  </label>
+                  <select
+                    value={
+                      newAccountId ||
+                      (newMethod === 'Paypal'
+                        ? newType === 'expense'
+                          ? profile.paypalExpenseSourceAccount || 'banca'
+                          : 'paypal'
+                        : newMethod === 'Contanti'
+                        ? 'cassa'
+                        : 'banca')
+                    }
+                    onChange={(e) => setNewAccountId(e.target.value as PaymentAccountId)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    <option value="banca">
+                      Conto Corrente Bancario (carta/IBAN collegato - predefinito per uscite)
+                    </option>
+                    <option value="paypal">Saldo Conto PayPal</option>
+                    <option value="cassa">Cassa Contanti</option>
+                    {(profile.customPaymentAccounts || []).map((ca) => (
+                      <option key={ca.id} value={ca.id}>
+                        {ca.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Socio collegato (opzionale)
+                  </label>
+                  <select
+                    value={newMemberId}
+                    onChange={(e) => setNewMemberId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    <option value="">-- Nessun socio collegato --</option>
+                    {members.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.childName}{' '}
+                        {m.membershipCardNumber ? `(Tess. ${m.membershipCardNumber})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {newCategory === 'Staff' && staff.length > 0 && (
+                  <div>
+                    <label className="block text-slate-700 font-medium mb-1">
+                      Collaboratore sportivo collegato
+                    </label>
+                    <select
+                      value={newStaffId}
+                      onChange={(e) => setNewStaffId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                    >
+                      <option value="">-- Nessun collaboratore --</option>
+                      {staff.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.role})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {newCategory === 'Staff' && newStaffId && (
+                <div>
+                  <label className="block text-slate-700 font-medium mb-1">
+                    Natura erogazione collaboratore (D.Lgs. 36/2021)
+                  </label>
+                  <select
+                    value={newStaffPaymentKind}
+                    onChange={(e) =>
+                      setNewStaffPaymentKind(e.target.value as StaffPaymentKind)
+                    }
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white"
+                  >
+                    <option value="compenso_sportivo">
+                      Compenso sportivo / collaboratore (concorre alle soglie 5.000 € / 15.000 €)
+                    </option>
+                    <option value="rimborso_spese">
+                      Rimborso spese documentato / piè di lista (escluso dalle soglie)
+                    </option>
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="block text-slate-700 font-medium mb-1">

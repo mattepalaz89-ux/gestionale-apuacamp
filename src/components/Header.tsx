@@ -73,7 +73,7 @@ export const Header: React.FC<HeaderProps> = ({
   onExportExcel,
   notificationCount,
   googleUserEmail,
-  associationName = 'Apuacamp A.S.D.',
+  associationName = 'Associazione',
   activeYear = 2027,
   onChangeActiveYear,
   driveSyncState = 'idle',

@@ -12,6 +12,7 @@ import {
   ReceiptTemplateConfig,
 } from '../types';
 import { formatEuro } from './finance';
+import { todayIso } from './dates';
 
 /**
  * Libreria predefinita di campi per la generazione dei Moduli Google (Google Forms).
@@ -217,7 +218,7 @@ export const DEFAULT_GOOGLE_FORM_FIELDS: GoogleFormFieldConfig[] = [
     title: 'Articolo Gadget Richiesto',
     questionType: 'radio',
     options: [
-      'Maglietta Apuacamp (15€)',
+      'Maglietta Associativa (15€)',
       'Tazza Smaltata (10€)',
       'Cappellino Outdoor (12€)',
       'Sacco Speleo (25€)',
@@ -491,10 +492,10 @@ export function resolveDynamicTextPlaceholders(
     '{{sconto_importo}}': ctx.sconto_importo || '€ 0,00',
     '{{buono_importo}}': ctx.buono_importo || '€ 0,00',
     '{{metodo_pagamento}}': ctx.metodo_pagamento || 'Bonifico',
-    '{{data}}': ctx.data || new Date().toISOString().slice(0, 10),
+    '{{data}}': ctx.data || todayIso(),
     '{{numero_ricevuta}}': ctx.numero_ricevuta || '2027/R-001',
     '{{anno}}': String(ctx.anno || 2027),
-    '{{asd_nome}}': ctx.asd_nome || 'Apuacamp A.S.D.',
+    '{{asd_nome}}': ctx.asd_nome || 'Associazione Sportiva Dilettantistica',
     '{{asd_cf}}': ctx.asd_cf || '',
     '{{asd_iban}}': ctx.asd_iban || '',
     '{{asd_affiliazione}}': ctx.asd_affiliazione || '',
@@ -815,7 +816,7 @@ export const DEFAULT_RECEIPT_CONFIG: ReceiptTemplateConfig = {
   showIbanOnReceipt: true,
   showLegalNotice: true,
   showStamp: true,
-  showSignature: true,
+  showSignature: false,
   showQuietanzaLine: true,
   showIntroDeclaration: true,
   documentTitleReceipt: 'Ricevuta Non Fiscale',
@@ -992,7 +993,7 @@ export function generateDigitalAsdStampDataUrl(
 
   ctx.textAlign = 'center';
   ctx.font = 'bold 18px sans-serif';
-  ctx.fillText((asdName || 'APUACAMP A.S.D.').toUpperCase().slice(0, 28), 170, 52);
+  ctx.fillText((asdName || 'ASSOCIAZIONE A.S.D.').toUpperCase().slice(0, 28), 170, 52);
 
   ctx.font = '600 11px sans-serif';
   ctx.fillText('ASSOCIAZIONE SPORTIVA DILETTANTISTICA', 170, 74);
@@ -1239,7 +1240,11 @@ export async function generateReceiptPdfBlobWithOverlays(
     ctx.textAlign = 'center';
     ctx.fillStyle = '#1e3a8a';
     ctx.font = `bold 32px ${baseFont}`;
-    ctx.fillText((params.profile.name || 'APUACAMP A.S.D.').toUpperCase(), centerX, y);
+    ctx.fillText(
+      (params.profile.name || 'ASSOCIAZIONE SPORTIVA DILETTANTISTICA').toUpperCase(),
+      centerX,
+      y
+    );
 
     y += 26;
     ctx.fillStyle = '#0f172a';
@@ -1295,7 +1300,11 @@ export async function generateReceiptPdfBlobWithOverlays(
     ctx.textAlign = 'left';
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 26px sans-serif';
-    ctx.fillText(params.profile.name || 'Apuacamp A.S.D.', leftX, y);
+    ctx.fillText(
+      params.profile.name || 'Associazione Sportiva Dilettantistica',
+      leftX,
+      y
+    );
 
     ctx.textAlign = 'right';
     ctx.fillStyle = '#0f172a';
@@ -1335,7 +1344,11 @@ export async function generateReceiptPdfBlobWithOverlays(
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 30px sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText((params.profile.name || 'APUACAMP A.S.D.').toUpperCase(), leftX, y);
+    ctx.fillText(
+      (params.profile.name || 'ASSOCIAZIONE SPORTIVA DILETTANTISTICA').toUpperCase(),
+      leftX,
+      y
+    );
 
     // Badge on right
     ctx.fillStyle = '#0f172a';
@@ -1865,7 +1878,11 @@ export async function generateMemberSummaryConsentPdfBlob(params: {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#0f172a';
   ctx.font = 'bold 28px sans-serif';
-  ctx.fillText((profile.name || 'APUACAMP A.S.D.').toUpperCase(), leftX, y);
+  ctx.fillText(
+    (profile.name || 'ASSOCIAZIONE SPORTIVA DILETTANTISTICA').toUpperCase(),
+    leftX,
+    y
+  );
 
   ctx.textAlign = 'right';
   ctx.fillStyle = '#065f46';

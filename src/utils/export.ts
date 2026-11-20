@@ -1,9 +1,9 @@
-import * as XLSX from 'xlsx';
 import {
   CashTransaction,
   Member,
   AssociationProfile,
   ArchivedFiscalYear,
+  IssuedReceipt,
 } from '../types';
 import {
   formatEuro,
@@ -11,6 +11,11 @@ import {
   calculateCategoryBreakdown,
   calculateMonthlyCashFlow,
 } from './finance';
+import { todayIso } from './dates';
+import {
+  sanitizeSpreadsheetCellString,
+  sanitizeSpreadsheetRows,
+} from './sanitize';
 
 /**
  * Downloads a file to the user's computer via browser blob
@@ -115,26 +120,35 @@ export function buildAccountingSpreadsheetTabs(params: {
   ];
 
   return [
-    { sheetTitle: 'Riepilogo_Bilancio', rows: riepilogoRows },
-    { sheetTitle: 'Libro_Cassa', rows: libroCassaRows },
-    { sheetTitle: 'Riepilogo_Mensile', rows: mensileRows },
+    { sheetTitle: 'Riepilogo_Bilancio', rows: sanitizeSpreadsheetRows(riepilogoRows) },
+    { sheetTitle: 'Libro_Cassa', rows: sanitizeSpreadsheetRows(libroCassaRows) },
+    { sheetTitle: 'Riepilogo_Mensile', rows: sanitizeSpreadsheetRows(mensileRows) },
   ];
+}
+
+function cleanAssociationFileSlug(name?: string): string {
+  const clean = (name || 'ASD')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return clean || 'ASD';
 }
 
 /**
  * Exports a multi-tab Excel (.xlsx) accounting workbook for the current or archived fiscal year
  */
-export function exportAccountingToExcel(params: {
+export async function exportAccountingToExcel(params: {
   transactions: CashTransaction[];
   initialFund: number;
   initialFundBank: number;
   initialFundCash: number;
   fiscalYear: number;
   associationName?: string;
-}) {
+}): Promise<void> {
+  const XLSX = await import('xlsx');
   const tabs = buildAccountingSpreadsheetTabs({
     ...params,
-    associationName: params.associationName || 'Apuacamp A.S.D.',
+    associationName: params.associationName || 'Associazione Sportiva Dilettantistica',
   });
 
   const wb = XLSX.utils.book_new();
@@ -143,7 +157,8 @@ export function exportAccountingToExcel(params: {
     XLSX.utils.book_append_sheet(wb, ws, tab.sheetTitle);
   }
 
-  const filename = `Contabilita_Cassa_ASD_${params.fiscalYear}_${new Date()
+  const slug = cleanAssociationFileSlug(params.associationName);
+  const filename = `Contabilita_Cassa_${slug}_${params.fiscalYear}_${new Date()
     .toISOString()
     .slice(0, 10)}.xlsx`;
   XLSX.writeFile(wb, filename);
@@ -152,10 +167,11 @@ export function exportAccountingToExcel(params: {
 /**
  * Exports an archived fiscal year into a complete Excel (.xlsx) workbook
  */
-export function exportArchivedYearToExcel(
+export async function exportArchivedYearToExcel(
   archived: ArchivedFiscalYear,
-  associationName: string = 'Apuacamp A.S.D.'
-) {
+  associationName: string = 'Associazione Sportiva Dilettantistica'
+): Promise<void> {
+  const XLSX = await import('xlsx');
   const accountingTabs = buildAccountingSpreadsheetTabs({
     transactions: archived.transactions,
     initialFund: archived.summary.initialFund,
@@ -201,17 +217,96 @@ export function exportArchivedYearToExcel(
   ];
   XLSX.utils.book_append_sheet(
     wb,
-    XLSX.utils.aoa_to_sheet(sociRows),
+    XLSX.utils.aoa_to_sheet(sanitizeSpreadsheetRows(sociRows)),
     `Soci_${archived.year}`
   );
 
-  XLSX.writeFile(wb, `Archivio_Annualita_${archived.year}_Apuacamp.xlsx`);
+  const slug = cleanAssociationFileSlug(associationName);
+  XLSX.writeFile(wb, `Archivio_Annualita_${archived.year}_${slug}.xlsx`);
+}
+
+/**
+ * Exports the progressive receipts register (Registro Ricevute) to an Excel (.xlsx) workbook for the accountant.
+ */
+export async function exportReceiptsRegistryToExcel(params: {
+  receipts: IssuedReceipt[];
+  associationName?: string;
+  filterYear?: number | 'ALL';
+}): Promise<void> {
+  const XLSX = await import('xlsx');
+  const {
+    receipts,
+    associationName = 'Associazione Sportiva Dilettantistica',
+    filterYear = 'ALL',
+  } = params;
+  const sorted = [...receipts].sort((a, b) => {
+    if (a.year !== b.year) return b.year - a.year;
+    return a.progressive - b.progressive;
+  });
+
+  const rows: (string | number)[][] = [
+    [
+      `REGISTRO PROGRESSIVO RICEVUTE EMESSE — ${associationName}${
+        filterYear !== 'ALL' ? ` (Anno ${filterYear})` : ''
+      }`,
+    ],
+    ['Data Esportazione', todayIso()],
+    [],
+    [
+      'Anno',
+      'Progressivo',
+      'N° Ricevuta',
+      'Data Emissione',
+      'Stato',
+      'Intestatario / Genitore Pagante',
+      'C.F. Pagante',
+      'Socio / Partecipante',
+      'C.F. Partecipante',
+      'Descrizione / Causale',
+      'Importo (€)',
+      'Metodo Pagamento',
+      'Link PDF Google Drive',
+      'Data Annullamento',
+      'Motivo Annullamento',
+    ],
+    ...sorted.map((r) => [
+      r.year,
+      r.progressive,
+      r.number,
+      r.issueDate,
+      r.status === 'annullata' ? 'ANNULLATA' : 'EMESSA',
+      r.payerName,
+      r.payerFiscalCode || '',
+      r.participantName || '',
+      r.participantFiscalCode || '',
+      r.description,
+      r.amount,
+      r.paymentMethod,
+      r.driveUrl || '',
+      r.cancelledAt || '',
+      r.cancelReason || '',
+    ]),
+  ];
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(sanitizeSpreadsheetRows(rows));
+  XLSX.utils.book_append_sheet(wb, ws, 'Registro_Ricevute');
+  const yearSuffix = filterYear !== 'ALL' ? `_${filterYear}` : '';
+  XLSX.writeFile(wb, `Registro_Ricevute_ASD${yearSuffix}_${todayIso()}.xlsx`);
+}
+
+function escapeCsvCell(val: string | number | boolean | null | undefined): string {
+  const sanitized = sanitizeSpreadsheetCellString(val);
+  return `"${sanitized.replace(/"/g, '""')}"`;
 }
 
 /**
  * Exports cash ledger transactions directly into an Excel-friendly CSV with UTF-8 BOM and Italian format.
  */
-export function exportTransactionsToCSV(transactions: CashTransaction[]) {
+export function exportTransactionsToCSV(
+  transactions: CashTransaction[],
+  associationName?: string
+) {
   const headers = [
     'Data',
     'Categoria',
@@ -221,24 +316,25 @@ export function exportTransactionsToCSV(transactions: CashTransaction[]) {
     'Descrizione',
   ];
   const rows = transactions.map((t) => [
-    t.date,
-    t.category,
+    sanitizeSpreadsheetCellString(t.date),
+    sanitizeSpreadsheetCellString(t.category),
     t.income !== null && t.income !== undefined ? t.income.toFixed(2).replace('.', ',') : '',
     t.expense !== null && t.expense !== undefined ? t.expense.toFixed(2).replace('.', ',') : '',
-    t.method,
-    `"${(t.description || '').replace(/"/g, '""')}"`,
+    sanitizeSpreadsheetCellString(t.method),
+    escapeCsvCell(t.description || ''),
   ]);
 
   const csvContent =
     '\uFEFF' + [headers.join(';'), ...rows.map((r) => r.join(';'))].join('\r\n');
-  const filename = `Flusso_Cassa_Apuacamp_${new Date().toISOString().slice(0, 10)}.csv`;
+  const slug = cleanAssociationFileSlug(associationName);
+  const filename = `Flusso_Cassa_${slug}_${todayIso()}.csv`;
   downloadFile(csvContent, filename, 'text/csv;charset=utf-8;');
 }
 
 /**
  * Exports members registry to Excel-friendly CSV
  */
-export function exportMembersToCSV(members: Member[]) {
+export function exportMembersToCSV(members: Member[], associationName?: string) {
   const headers = [
     'Bimbo/a',
     'Data Nascita',
@@ -261,29 +357,30 @@ export function exportMembersToCSV(members: Member[]) {
   ];
 
   const rows = members.map((m) => [
-    `"${m.childName.replace(/"/g, '""')}"`,
-    m.birthDate,
-    `"${m.birthPlace.replace(/"/g, '""')}"`,
-    m.group,
-    m.childFiscalCode,
-    `"${m.childAddress.replace(/"/g, '""')}"`,
-    `"${m.parentName.replace(/"/g, '""')}"`,
-    m.parentFiscalCode,
-    m.parentPhone,
-    m.parentEmail,
-    m.membershipCardNumber,
+    escapeCsvCell(m.childName),
+    sanitizeSpreadsheetCellString(m.birthDate),
+    escapeCsvCell(m.birthPlace),
+    sanitizeSpreadsheetCellString(m.group),
+    sanitizeSpreadsheetCellString(m.childFiscalCode),
+    escapeCsvCell(m.childAddress),
+    escapeCsvCell(m.parentName),
+    sanitizeSpreadsheetCellString(m.parentFiscalCode),
+    sanitizeSpreadsheetCellString(m.parentPhone),
+    sanitizeSpreadsheetCellString(m.parentEmail),
+    sanitizeSpreadsheetCellString(m.membershipCardNumber),
     m.isPaid ? 'SI' : 'NO',
-    m.expiryDate,
-    m.insuranceType,
+    sanitizeSpreadsheetCellString(m.expiryDate),
+    sanitizeSpreadsheetCellString(m.insuranceType),
     m.photoConsent ? 'SI' : 'NO',
-    `"${(m.allergies || '').replace(/"/g, '""')}"`,
-    `"${(m.notesConditions || '').replace(/"/g, '""')}"`,
+    escapeCsvCell(m.allergies || ''),
+    escapeCsvCell(m.notesConditions || ''),
     m.formSignedAndArchived ? 'SI' : 'NO',
   ]);
 
   const csvContent =
     '\uFEFF' + [headers.join(';'), ...rows.map((r) => r.join(';'))].join('\r\n');
-  const filename = `Anagrafica_Soci_Apuacamp_${new Date().toISOString().slice(0, 10)}.csv`;
+  const slug = cleanAssociationFileSlug(associationName);
+  const filename = `Anagrafica_Soci_${slug}_${todayIso()}.csv`;
   downloadFile(csvContent, filename, 'text/csv;charset=utf-8;');
 }
 

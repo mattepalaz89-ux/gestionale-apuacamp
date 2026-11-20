@@ -1,179 +1,147 @@
 import {
-  Member,
-  CashTransaction,
-  EventItem,
-  EventBooking,
-  StaffMember,
+  AppState,
   AssociationProfile,
-  GadgetItem,
-  GadgetOrder,
   AssociationRole,
-  AssemblyMeeting,
-  GrantItem,
-  ArchivedFiscalYear,
+  Member,
+  MemberCardRecord,
   RecurringExpensePlan,
+  ArchivedFiscalYear,
 } from '../types';
 import {
-  INITIAL_MEMBERS,
-  INITIAL_TRANSACTIONS,
-  INITIAL_EVENTS,
-  INITIAL_BOOKINGS,
-  INITIAL_STAFF,
   INITIAL_ASSOCIATION_PROFILE,
   INITIAL_CASH_SUMMARY,
-  INITIAL_GADGETS,
+  INITIAL_MEMBERS,
+  INITIAL_TRANSACTIONS,
+  INITIAL_BOOKINGS,
   INITIAL_GADGET_ORDERS,
+  INITIAL_ARCHIVED_YEARS,
+  INITIAL_STAFF,
+  INITIAL_EVENTS,
+  INITIAL_GADGETS,
   INITIAL_ROLES,
   INITIAL_ASSEMBLIES,
   INITIAL_GRANTS,
-  INITIAL_ARCHIVED_YEARS,
 } from '../data/initialData';
 import { calculateCashTotals } from './finance';
+import { saveLocalSnapshot } from './localDb';
+import { newId } from './ids';
+import { todayIso } from './dates';
+import {
+  CURRENT_SCHEMA_VERSION,
+  DEFAULT_ASSOCIATION_ID,
+  deriveAssociationId,
+  migrateState,
+} from './migrations';
 
-export interface AppState {
-  members: Member[];
-  transactions: CashTransaction[];
-  events: EventItem[];
-  bookings: EventBooking[];
-  staff: StaffMember[];
-  profile: AssociationProfile;
-  initialFund: number;
-  initialFundBank: number;
-  initialFundCash: number;
-  gadgets: GadgetItem[];
-  gadgetOrders: GadgetOrder[];
-  roles: AssociationRole[];
-  assemblies: AssemblyMeeting[];
-  grants: GrantItem[];
-  archivedYears: ArchivedFiscalYear[];
-  recurringExpenses: RecurringExpensePlan[];
+export type { AppState };
+export { CURRENT_SCHEMA_VERSION, DEFAULT_ASSOCIATION_ID, deriveAssociationId, migrateState };
+
+export function createDefaultAppState(activeYear = 2027): AppState {
+  const profile: AssociationProfile = {
+    ...INITIAL_ASSOCIATION_PROFILE,
+    activeYear,
+    associationId: deriveAssociationId(INITIAL_ASSOCIATION_PROFILE),
+  };
+  return migrateState(
+    {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      version: 1,
+      updatedAt: '',
+      updatedBy: 'local',
+      profile,
+      initialFund: INITIAL_CASH_SUMMARY.initialFund,
+      initialFundBank: INITIAL_CASH_SUMMARY.initialFundBank,
+      initialFundCash: INITIAL_CASH_SUMMARY.initialFundCash,
+      members: [...INITIAL_MEMBERS],
+      transactions: [...INITIAL_TRANSACTIONS],
+      recurringExpenses: [],
+      events: [...INITIAL_EVENTS],
+      bookings: [...INITIAL_BOOKINGS],
+      gadgets: [...INITIAL_GADGETS],
+      gadgetOrders: [...INITIAL_GADGET_ORDERS],
+      staff: [...INITIAL_STAFF],
+      staffPayments: [],
+      roles: [...INITIAL_ROLES],
+      assemblies: [...INITIAL_ASSEMBLIES],
+      grants: [...INITIAL_GRANTS],
+      archivedYears: [...INITIAL_ARCHIVED_YEARS],
+      receipts: [],
+    },
+    activeYear
+  );
 }
 
-function getScopedKey(baseKey: string, userEmail?: string | null): string {
-  const cleanUser = (userEmail || 'local_private').toLowerCase().replace(/[^a-z0-9@._-]/g, '_');
-  return `apuacamp_v3_${cleanUser}_${baseKey}`;
+export function resetToEmpty2027(
+  _userEmail?: string | null,
+  activeYear = 2027
+): AppState {
+  return createDefaultAppState(activeYear);
 }
 
-const BASE_KEYS = [
-  'members',
-  'transactions',
-  'events',
-  'bookings',
-  'staff',
-  'profile',
-  'cash_summary',
-  'gadgets',
-  'gadget_orders',
-  'roles',
-  'assemblies',
-  'grants',
-  'archived_years',
-  'recurring_expenses',
-];
-
-const SNAPSHOT_KEY_LATEST = 'apuacamp_working_snapshot_v4_latest';
-
-function getSnapshotKey(userEmail?: string | null): string {
-  const cleanUser = (userEmail || 'local_private').toLowerCase().replace(/[^a-z0-9@._-]/g, '_');
-  return `apuacamp_working_snapshot_v4_${cleanUser}`;
+export function hydrateAppState(
+  parsed?: Partial<AppState> & {
+    governanceRoles?: AssociationRole[];
+    recurringPlans?: RecurringExpensePlan[];
+  } | null,
+  fallbackYear = 2027
+): AppState {
+  if (!parsed || typeof parsed !== 'object') {
+    return createDefaultAppState(fallbackYear);
+  }
+  return migrateState(parsed, fallbackYear);
 }
 
-export function countAppStateRecords(state: AppState): number {
+/**
+ * Increments the optimistic concurrency `version` counter and records `updatedAt` and `updatedBy`.
+ */
+export function bumpStateVersion(state: AppState, userEmail?: string | null): AppState {
+  const currentVersion =
+    typeof state.version === 'number' && Number.isFinite(state.version) && state.version >= 1
+      ? Math.floor(state.version)
+      : 1;
+  const cleanEmail = (userEmail || '').trim().toLowerCase() || state.updatedBy || 'local';
+  return {
+    ...state,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    version: currentVersion + 1,
+    updatedAt: new Date().toISOString(),
+    updatedBy: cleanEmail,
+  };
+}
+
+/**
+ * Synchronous initial state loader (never reads from shared localStorage keys).
+ * Per-account IndexedDB snapshots are loaded asynchronously via `loadLocalSnapshot(email)` in `localDb.ts`.
+ */
+export function loadAppState(
+  _userEmail?: string | null,
+  activeYear = 2027
+): AppState {
+  return createDefaultAppState(activeYear);
+}
+
+/**
+ * Persists an account-scoped snapshot into IndexedDB (never into localStorage, and never into a global key).
+ */
+export function saveAppState(state: AppState, userEmail?: string | null): void {
+  if (!userEmail || !userEmail.trim()) return;
+  void saveLocalSnapshot(userEmail.trim().toLowerCase(), state);
+}
+
+/**
+ * Counts user-populated operational records (members, transactions, bookings, gadgetOrders, archivedYears)
+ * to distinguish a populated database from an empty initial skeleton.
+ */
+export function countAppStateRecords(state?: Partial<AppState> | null): number {
   if (!state) return 0;
   return (
     (state.members?.length || 0) +
     (state.transactions?.length || 0) +
     (state.bookings?.length || 0) +
     (state.gadgetOrders?.length || 0) +
-    (state.recurringExpenses?.length || 0)
+    (state.archivedYears?.length || 0) +
+    (state.receipts?.length || 0)
   );
-}
-
-export function clearLegacyBrowserStorage(userEmail?: string | null): void {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    BASE_KEYS.forEach((b) => {
-      window.localStorage.removeItem(getScopedKey(b, userEmail));
-      window.localStorage.removeItem(getScopedKey(b, null));
-    });
-  } catch {
-    // ignore in non-browser environment
-  }
-}
-
-export function loadAppState(userEmail?: string | null, startYear?: number): AppState {
-  clearLegacyBrowserStorage(userEmail);
-  if (startYear !== undefined) {
-    return resetToEmpty2027(userEmail, startYear);
-  }
-  if (typeof window !== 'undefined' && window.localStorage) {
-    try {
-      const scopedRaw = userEmail
-        ? window.localStorage.getItem(getSnapshotKey(userEmail))
-        : null;
-      const latestRaw = window.localStorage.getItem(SNAPSHOT_KEY_LATEST);
-      const rawToUse = scopedRaw || latestRaw;
-      if (rawToUse) {
-        const parsed = parseBackupJSON(rawToUse);
-        if (parsed) {
-          return parsed;
-        }
-      }
-    } catch {
-      // Ignore storage access errors
-    }
-  }
-  return resetToEmpty2027(userEmail, startYear);
-}
-
-/**
- * Persists a local safety snapshot in browser storage so uploaded Soci & Movimenti
- * are never lost before/between Google Drive syncs or page refreshes.
- */
-export function saveAppState(state: AppState, userEmail?: string | null): void {
-  clearLegacyBrowserStorage(userEmail);
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    const serialized = JSON.stringify(state);
-    window.localStorage.setItem(getSnapshotKey(userEmail), serialized);
-    window.localStorage.setItem(SNAPSHOT_KEY_LATEST, serialized);
-  } catch {
-    // Ignore quota or non-browser errors
-  }
-}
-
-export function resetToEmpty2027(userEmail?: string | null, startYear?: number): AppState {
-  clearLegacyBrowserStorage(userEmail);
-  if (typeof window !== 'undefined' && window.localStorage && startYear === undefined) {
-    try {
-      window.localStorage.removeItem(getSnapshotKey(userEmail));
-      window.localStorage.removeItem(SNAPSHOT_KEY_LATEST);
-    } catch {
-      // ignore
-    }
-  }
-  const effectiveYear = startYear ?? INITIAL_ASSOCIATION_PROFILE.activeYear;
-  return {
-    members: INITIAL_MEMBERS,
-    transactions: INITIAL_TRANSACTIONS,
-    events: INITIAL_EVENTS,
-    bookings: INITIAL_BOOKINGS,
-    staff: INITIAL_STAFF,
-    profile: {
-      ...INITIAL_ASSOCIATION_PROFILE,
-      activeYear: effectiveYear,
-    },
-    initialFund: INITIAL_CASH_SUMMARY.initialFund,
-    initialFundBank: INITIAL_CASH_SUMMARY.initialFundBank,
-    initialFundCash: INITIAL_CASH_SUMMARY.initialFundCash,
-    gadgets: INITIAL_GADGETS,
-    gadgetOrders: INITIAL_GADGET_ORDERS,
-    roles: INITIAL_ROLES,
-    assemblies: INITIAL_ASSEMBLIES,
-    grants: INITIAL_GRANTS,
-    archivedYears: INITIAL_ARCHIVED_YEARS,
-    recurringExpenses: [],
-  };
 }
 
 export interface YearTransitionMemberStats {
@@ -182,38 +150,26 @@ export interface YearTransitionMemberStats {
   stillValidTessera365Count: number;
 }
 
-function parseMemberExpiryYearAndTime(expiryStr?: string): { year: number; time: number } | null {
-  if (!expiryStr) return null;
-  const clean = expiryStr.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
-    const [y, m, d] = clean.split('-').map(Number);
-    return { year: y, time: Date.UTC(y, m - 1, d) };
-  }
-  const match = clean.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
-  if (match) {
-    const d = parseInt(match[1], 10);
-    const m = parseInt(match[2], 10);
-    let y = parseInt(match[3], 10);
-    if (y < 100) y += 2000;
-    return { year: y, time: Date.UTC(y, m - 1, d) };
-  }
-  return null;
+function isCardValidForNewYear(member: Member, targetNewYear: number): boolean {
+  if (member.cardValidityType !== 'tessera_365') return false;
+  const exp = (member.expiryDate || '').trim();
+  if (!exp) return false;
+  const yearMatch = exp.match(/(\d{4})/);
+  if (!yearMatch) return false;
+  const expYear = Number(yearMatch[1]);
+  return Number.isFinite(expYear) && expYear >= targetNewYear;
 }
 
 export function computeYearTransitionMemberStats(
   members: Member[],
-  closedYear: number,
-  newYear: number = closedYear + 1
+  _closingYear: number,
+  targetNewYear: number
 ): YearTransitionMemberStats {
-  const newYearStartUTC = Date.UTC(newYear, 0, 1);
-  let expiredCardsToRenewCount = 0;
   let stillValidTessera365Count = 0;
+  let expiredCardsToRenewCount = 0;
 
   for (const m of members) {
-    const parsedExp = parseMemberExpiryYearAndTime(m.expiryDate);
-    const isStillValidInNewYear =
-      m.cardValidityType === 'tessera_365' && parsedExp !== null && parsedExp.time >= newYearStartUTC;
-    if (isStillValidInNewYear) {
+    if (isCardValidForNewYear(m, targetNewYear)) {
       stillValidTessera365Count++;
     } else {
       expiredCardsToRenewCount++;
@@ -227,23 +183,11 @@ export function computeYearTransitionMemberStats(
   };
 }
 
-/**
- * Pure function that archives the closing fiscal year and transitions the state to the new year,
- * carrying over ONLY the closing bank and cash balances as the new initialFund ("residuo a bilancio"),
- * keeping all members in the registry while expiring cards whose validity ended with the closed year.
- */
 export function archiveFiscalYearState(
   currentState: AppState,
-  targetNewYear?: number
-): {
-  nextState: AppState;
-  archivedRecord: ArchivedFiscalYear;
-  memberTransitionStats: YearTransitionMemberStats;
-} {
-  const closedYear = currentState.profile.activeYear;
-  const newYear = targetNewYear ?? closedYear + 1;
-  const newYearStartUTC = Date.UTC(newYear, 0, 1);
-
+  targetNewYear: number
+): { nextState: AppState; archivedRecord: ArchivedFiscalYear } {
+  const closingYear = currentState.profile.activeYear;
   const totals = calculateCashTotals(
     currentState.transactions,
     currentState.initialFund,
@@ -252,9 +196,9 @@ export function archiveFiscalYearState(
   );
 
   const archivedRecord: ArchivedFiscalYear = {
-    id: `arch-${closedYear}-${Date.now()}`,
-    year: closedYear,
-    archivedAt: new Date().toISOString().slice(0, 10),
+    id: newId(`arch-${closingYear}`),
+    year: closingYear,
+    archivedAt: todayIso(),
     summary: {
       initialFund: totals.initialFund,
       totalIncome: totals.totalIncome,
@@ -271,142 +215,107 @@ export function archiveFiscalYearState(
     events: [...currentState.events],
     bookings: [...currentState.bookings],
     gadgetOrders: [...currentState.gadgetOrders],
-    membersSnapshot: [...currentState.members],
+    membersSnapshot: currentState.members.map((m) => ({ ...m })),
   };
 
-  // Transition members: keep all members in the registry; expire cards that end on or before Dec 31 of closedYear
+  // Transition members: retain all members in registry; archive solar cards into cardHistory while keeping valid Tessera 365
   const transitionedMembers: Member[] = currentState.members.map((m) => {
-    const parsedExp = parseMemberExpiryYearAndTime(m.expiryDate);
-    const isStillValidInNewYear =
-      m.cardValidityType === 'tessera_365' &&
-      parsedExp !== null &&
-      parsedExp.time >= newYearStartUTC;
+    const isValidInNewYear = isCardValidForNewYear(m, targetNewYear);
 
-    if (isStillValidInNewYear) {
-      return { ...m };
+    const historyEntry: MemberCardRecord | null = m.membershipCardNumber
+      ? {
+          id: `card-${closingYear}-${m.id}`,
+          cardNumber: m.membershipCardNumber,
+          issueDate: m.cardIssueDate || `${closingYear}-01-01`,
+          expiryDate: m.expiryDate || `${closingYear}-12-31`,
+          validityType: m.cardValidityType || 'solare',
+          insuranceType: m.insuranceType,
+        }
+      : null;
+
+    const existingHistory = Array.isArray(m.cardHistory) ? [...m.cardHistory] : [];
+    if (
+      historyEntry &&
+      !existingHistory.some((h) => h.cardNumber === historyEntry.cardNumber)
+    ) {
+      existingHistory.push(historyEntry);
     }
 
-    const previousExpiry = m.expiryDate || `31/12/${closedYear}`;
-    const existingHistory = m.cardHistory || [];
-    const alreadyInHistory = existingHistory.some(
-      (h) => h.cardNumber === m.membershipCardNumber && h.expiryDate === previousExpiry
-    );
-
-    const updatedHistory =
-      m.membershipCardNumber && !alreadyInHistory
-        ? [
-            {
-              id: `hist-${closedYear}-${m.id}`,
-              cardNumber: m.membershipCardNumber,
-              issueDate: m.cardIssueDate || `01/01/${closedYear}`,
-              expiryDate: previousExpiry,
-              validityType: m.cardValidityType || ('solare' as const),
-              insuranceType: m.insuranceType,
-              notes: `Tessera Anno ${closedYear} (scaduta a fine esercizio)`,
-            },
-            ...existingHistory,
-          ]
-        : existingHistory;
-
-    // Ensure expiryDate reflects the expired date (<= 31/12/closedYear) so the member stays in registry with expired card
-    const effectiveExpiredDate =
-      parsedExp && parsedExp.time < newYearStartUTC ? m.expiryDate : `31/12/${closedYear}`;
+    if (isValidInNewYear) {
+      return {
+        ...m,
+        cardHistory: existingHistory,
+      };
+    }
 
     return {
       ...m,
-      expiryDate: effectiveExpiredDate,
-      cardHistory: updatedHistory,
+      isPaid: false,
+      cardHistory: existingHistory,
     };
   });
 
-  const memberTransitionStats = computeYearTransitionMemberStats(
-    currentState.members,
-    closedYear,
-    newYear
-  );
-
-  // Create statutory Assembly reminder for the closed year if not already present
-  const approvalAssemblyTitle = `Assemblea Ordinaria Soci - Approvazione Rendiconto Economico-Finanziario ${closedYear}`;
-  const hasAssembly = currentState.assemblies.some(
-    (a) => a.fiscalYear === closedYear && a.type === 'ordinaria_rendiconto'
-  );
-  const nextAssemblies: AssemblyMeeting[] = hasAssembly
-    ? currentState.assemblies
-    : [
-        {
-          id: `asm-${closedYear}-bilancio-${Date.now()}`,
-          fiscalYear: closedYear,
-          title: approvalAssemblyTitle,
-          type: 'ordinaria_rendiconto',
-          scheduledDate: `${newYear}-04-15`,
-          approvalDeadline: `${newYear}-04-30`,
-          status: 'da_convocare',
-          minutesSummary: `Approvazione del rendiconto economico-finanziario dell'esercizio chiuso al 31/12/${closedYear} (Residuo a bilancio riportato al ${newYear}: € ${totals.currentTotal.toFixed(
-            2
-          )}).`,
-        },
-        ...currentState.assemblies,
-      ];
-
   const nextState: AppState = {
     ...currentState,
-    members: transitionedMembers,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    version: (currentState.version || 1) + 1,
+    updatedAt: new Date().toISOString(),
     profile: {
       ...currentState.profile,
-      activeYear: newYear,
-      accountingGoogleSheetId: undefined,
-      accountingGoogleSheetUrl: undefined,
+      activeYear: targetNewYear,
     },
     initialFund: totals.currentTotal,
     initialFundBank: totals.currentBank,
     initialFundCash: totals.currentCash,
+    members: transitionedMembers,
     transactions: [],
     bookings: [],
     gadgetOrders: [],
-    assemblies: nextAssemblies,
     archivedYears: [
       archivedRecord,
-      ...currentState.archivedYears.filter((a) => a.year !== closedYear),
+      ...currentState.archivedYears.filter((a) => a.year !== closingYear),
     ],
   };
 
-  return { nextState, archivedRecord, memberTransitionStats };
+  return { nextState, archivedRecord };
 }
 
+/**
+ * Compact JSON serialization without indentation for fast internal autosave (IndexedDB / Drive SaveQueue).
+ */
+export function serializeAppStateCompact(state: AppState): string {
+  return JSON.stringify(state);
+}
+
+/**
+ * Pretty-printed JSON serialization with 2-space indentation for user-downloaded .json files.
+ */
 export function exportBackupJSON(state: AppState): string {
   return JSON.stringify(state, null, 2);
 }
 
-export function parseBackupJSON(jsonText: string): AppState | null {
+export function parseBackupJSON(jsonString: string): AppState | null {
   try {
-    const data = JSON.parse(jsonText);
-    if (!Array.isArray(data.members) && !Array.isArray(data.transactions)) {
-      throw new Error('Formato backup non valido');
+    if (!jsonString || !jsonString.trim()) return null;
+    const parsed = JSON.parse(jsonString);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed.profile && !Array.isArray(parsed.transactions) && !Array.isArray(parsed.members)) {
+      return null;
     }
-    return {
-      members: Array.isArray(data.members) ? data.members : INITIAL_MEMBERS,
-      transactions: Array.isArray(data.transactions) ? data.transactions : INITIAL_TRANSACTIONS,
-      events: Array.isArray(data.events) ? data.events : INITIAL_EVENTS,
-      bookings: Array.isArray(data.bookings) ? data.bookings : INITIAL_BOOKINGS,
-      staff: Array.isArray(data.staff) ? data.staff : INITIAL_STAFF,
-      profile: data.profile || INITIAL_ASSOCIATION_PROFILE,
-      initialFund: typeof data.initialFund === 'number' ? data.initialFund : 0,
-      initialFundBank: typeof data.initialFundBank === 'number' ? data.initialFundBank : 0,
-      initialFundCash: typeof data.initialFundCash === 'number' ? data.initialFundCash : 0,
-      gadgets: Array.isArray(data.gadgets) ? data.gadgets : INITIAL_GADGETS,
-      gadgetOrders: Array.isArray(data.gadgetOrders) ? data.gadgetOrders : INITIAL_GADGET_ORDERS,
-      roles: Array.isArray(data.roles) ? data.roles : INITIAL_ROLES,
-      assemblies: Array.isArray(data.assemblies) ? data.assemblies : INITIAL_ASSEMBLIES,
-      grants: Array.isArray(data.grants) ? data.grants : INITIAL_GRANTS,
-      archivedYears: Array.isArray(data.archivedYears)
-        ? data.archivedYears
-        : INITIAL_ARCHIVED_YEARS,
-      recurringExpenses: Array.isArray(data.recurringExpenses)
-        ? data.recurringExpenses
-        : [],
-    };
-  } catch (e) {
-    console.error('Failed to parse backup JSON:', e);
+    return migrateState(parsed, parsed.profile?.activeYear || 2027);
+  } catch {
     return null;
   }
+}
+
+export function downloadJsonBackup(data: AppState, customFileName?: string): void {
+  const json = exportBackupJSON(data);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dateStr = todayIso();
+  a.href = url;
+  a.download = customFileName || `backup_apuacamp_${dateStr}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

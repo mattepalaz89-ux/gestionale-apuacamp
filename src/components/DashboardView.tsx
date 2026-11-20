@@ -68,7 +68,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     transactions,
     initialFund,
     initialFundBank,
-    initialFundCash
+    initialFundCash,
+    {
+      initialPaypal: profile.initialFundPaypal || 0,
+      paymentAccounts: profile.paymentAccounts,
+      paypalExpenseSourceAccount: profile.paypalExpenseSourceAccount,
+      customPaymentAccounts: profile.customPaymentAccounts,
+    }
   );
 
   const pendingMembersCount = members.filter((m) => !m.isPaid).length;
@@ -104,8 +110,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-1.5 text-2xl font-extrabold text-slate-900 font-mono tabular-nums tracking-tight">
             {formatEuro(totals.currentTotal)}
           </div>
-          <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500 font-mono tabular-nums">
+          <div className="mt-2 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-500 font-mono tabular-nums">
             <span>C/C: {formatEuro(totals.currentBank)}</span>
+            <span>·</span>
+            <span>PayPal: {formatEuro(totals.currentPaypal)}</span>
             <span>·</span>
             <span>Cont.: {formatEuro(totals.currentCash)}</span>
           </div>

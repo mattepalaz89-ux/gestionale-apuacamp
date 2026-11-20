@@ -32,6 +32,8 @@ import {
   ReceiptTemplateConfig,
   ReceiptLineItem,
   EmailTemplateId,
+  IssuedReceipt,
+  PaymentMethod,
 } from '../types';
 import {
   formatEuro,
@@ -57,7 +59,21 @@ import {
   generateReceiptPdfBlobWithOverlays,
   ReceiptPlaceholderContext,
 } from '../utils/formAndReceiptTemplates';
-import { sendGmailMessageWithAttachment, googleSignIn } from '../services/googleWorkspace';
+import {
+  sendGmailMessageWithAttachment,
+  googleSignIn,
+  uploadFileToDrive,
+} from '../services/googleWorkspace';
+import { todayIso } from '../utils/dates';
+import { newId } from '../utils/ids';
+import {
+  nextReceiptProgressive,
+  formatReceiptNumber,
+  findDuplicateReceiptNumber,
+  findExistingReceiptForContext,
+  isTaxDeductionClausePresent,
+  validateReceiptFor730,
+} from '../utils/receipts';
 
 interface ReceiptModalProps {
   isOpen: boolean;
@@ -66,6 +82,10 @@ interface ReceiptModalProps {
   booking?: EventBooking;
   transaction?: CashTransaction;
   gadgetOrder?: GadgetOrder;
+  existingReceipt?: IssuedReceipt | null;
+  initialOpenGmailPanel?: boolean;
+  receipts?: IssuedReceipt[];
+  onIssueReceipt?: (receipt: IssuedReceipt) => void;
   events?: EventItem[];
   gadgets?: GadgetItem[];
   googleUserEmail?: string | null;
@@ -84,6 +104,10 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   booking,
   transaction,
   gadgetOrder,
+  existingReceipt,
+  initialOpenGmailPanel = false,
+  receipts = [],
+  onIssueReceipt,
   events = [],
   gadgets = [],
   googleUserEmail,
@@ -98,10 +122,20 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     booking && !booking.isBalancePaid && booking.balanceAmount > 0 ? 'sollecito' : 'ricevuta';
 
   const [docType, setDocType] = useState<'ricevuta' | 'preventivo' | 'sollecito'>(initialType);
-  const [receiptNumber, setReceiptNumber] = useState<string>(
-    `${profile.activeYear}/R-${Math.floor(100 + Math.random() * 900)}`
+  const [docDate, setDocDate] = useState<string>(todayIso());
+  const [receiptNumber, setReceiptNumber] = useState<string>(() =>
+    formatReceiptNumber(
+      nextReceiptProgressive(receipts, profile.activeYear),
+      profile.activeYear,
+      profile.receiptNumberFormat
+    )
   );
-  const [docDate, setDocDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [loadedReceiptId, setLoadedReceiptId] = useState<string | null>(null);
+  const [isManualNumber, setIsManualNumber] = useState<boolean>(false);
+  const [duplicateConfirmPending, setDuplicateConfirmPending] = useState<
+    'download' | 'gmail' | null
+  >(null);
+
   const [isCustomizing, setIsCustomizing] = useState<boolean>(false);
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
@@ -157,22 +191,90 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     }
   };
 
+  const docYear = Number(docDate.slice(0, 4)) || profile.activeYear;
+
+  const computeProposedNumber = (
+    targetDocType: 'ricevuta' | 'preventivo' | 'sollecito',
+    targetYear: number
+  ): string => {
+    if (targetDocType === 'preventivo') return `P-${targetYear}`;
+    if (targetDocType === 'sollecito') return `S-${targetYear}`;
+    const nextProg = nextReceiptProgressive(receipts, targetYear);
+    return formatReceiptNumber(nextProg, targetYear, profile.receiptNumberFormat);
+  };
+
   useEffect(() => {
     if (isOpen) {
+      const matchedExisting =
+        existingReceipt ||
+        findExistingReceiptForContext(receipts, {
+          transactionId: transaction?.id,
+          bookingId: booking?.id,
+          gadgetOrderId: gadgetOrder?.id,
+        });
+
       const nextType: 'ricevuta' | 'preventivo' | 'sollecito' =
-        booking && !booking.isBalancePaid && booking.balanceAmount > 0 ? 'sollecito' : 'ricevuta';
+        matchedExisting
+          ? 'ricevuta'
+          : booking && !booking.isBalancePaid && booking.balanceAmount > 0
+            ? 'sollecito'
+            : 'ricevuta';
+
+      const initialDate =
+        matchedExisting?.issueDate ||
+        transaction?.date ||
+        gadgetOrder?.date ||
+        todayIso();
+      const initialYear = Number(initialDate.slice(0, 4)) || profile.activeYear;
+
       setDocType(nextType);
+      setDocDate(initialDate);
       setConfig(resolveReceiptConfig(profile));
       setStampDataUrl(profile.stampImageDataUrl);
       setSignatureDataUrl(profile.signatureImageDataUrl);
       setDynamicOverrides({});
-      setIsGmailPanelOpen(false);
+      setDuplicateConfirmPending(null);
       setGmailError(null);
+
+      if (matchedExisting) {
+        setLoadedReceiptId(matchedExisting.id);
+        setIsManualNumber(false);
+        setReceiptNumber(matchedExisting.number);
+      } else {
+        setLoadedReceiptId(null);
+        setIsManualNumber(false);
+        setReceiptNumber(computeProposedNumber(nextType, initialYear));
+      }
 
       const ins = member?.insuranceType || 'Gold';
       const cardAmount = ins === 'Platinum' ? 35 : ins === 'Gold' ? 20 : 10;
 
-      if (booking) {
+      if (matchedExisting && matchedExisting.lineItems && matchedExisting.lineItems.length > 0) {
+        setLineItems(matchedExisting.lineItems.map((li) => ({ ...li })));
+        setCustomPaymentMethod(matchedExisting.paymentMethod || 'Bonifico');
+        setDiscountType('none');
+        setDiscountValue(0);
+        setDiscountLabel('');
+        setVoucherApplied(0);
+        setSelectedEmailTemplateId('ricevuta_evento');
+      } else if (matchedExisting) {
+        setLineItems([
+          {
+            id: `li-rec-${matchedExisting.id}`,
+            category: 'evento',
+            title: matchedExisting.description,
+            subtitle: `Ricevuta N° ${matchedExisting.number} del ${matchedExisting.issueDate}`,
+            amount: matchedExisting.amount,
+            enabled: true,
+          },
+        ]);
+        setCustomPaymentMethod(matchedExisting.paymentMethod || 'Bonifico');
+        setDiscountType('none');
+        setDiscountValue(0);
+        setDiscountLabel('');
+        setVoucherApplied(0);
+        setSelectedEmailTemplateId('ricevuta_evento');
+      } else if (booking) {
         const baseAmt =
           nextType === 'sollecito'
             ? booking.balanceAmount
@@ -202,7 +304,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
             id: `li-gd-${gadgetOrder.id}`,
             category: 'gadget',
             title: `Contributo Gadget Associativo: ${gadgetOrder.gadgetName} (${gadgetOrder.variant} x${gadgetOrder.quantity})`,
-            subtitle: 'Erogazione liberale / contributo per materiale associativo Apuacamp',
+            subtitle: `Erogazione liberale / contributo per materiale associativo ${profile.name || 'ASD'}`,
             amount: gadgetOrder.totalPrice,
             enabled: true,
           },
@@ -244,7 +346,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       } else {
         setLineItems([
           {
-            id: `li-card-${Date.now()}`,
+            id: newId('li-card'),
             category: 'tessera',
             title: `Quota Associativa e Tesseramento ${profile.activeYear} (Copertura ${ins})`,
             subtitle: `Iscrizione libro soci e copertura assicurativa US ACLI`,
@@ -259,28 +361,46 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
         setVoucherApplied(0);
         setSelectedEmailTemplateId('ricevuta_tessera');
       }
+
+      setIsGmailPanelOpen(Boolean(initialOpenGmailPanel));
     }
-  }, [isOpen, member, booking, transaction, gadgetOrder, profile]);
+  }, [isOpen, member, booking, transaction, gadgetOrder, existingReceipt, initialOpenGmailPanel, profile]);
 
   if (!isOpen) return null;
+
+  const loadedReceiptObj = loadedReceiptId
+    ? receipts.find((r) => r.id === loadedReceiptId) || existingReceipt || null
+    : null;
 
   const childName =
     member?.childName ||
     booking?.childName ||
     gadgetOrder?.childName ||
     transaction?.relatedMemberName ||
+    loadedReceiptObj?.participantName ||
     'Socio Tesserato';
   const parentName =
     member?.parentName ||
     booking?.parentName ||
     gadgetOrder?.parentName ||
+    loadedReceiptObj?.payerName ||
     'Genitore / Esercente la responsabilità';
   const parentEmail =
-    member?.parentEmail || booking?.parentEmail || gadgetOrder?.parentEmail || '';
+    member?.parentEmail ||
+    booking?.parentEmail ||
+    gadgetOrder?.parentEmail ||
+    loadedReceiptObj?.payerEmail ||
+    loadedReceiptObj?.sentTo ||
+    '';
   const parentPhone =
     member?.parentPhone || booking?.parentPhone || gadgetOrder?.parentPhone || '';
-  const parentFiscalCode = member?.parentFiscalCode || member?.childFiscalCode || '';
-  const childFiscalCode = member?.childFiscalCode || '';
+  const parentFiscalCode =
+    member?.parentFiscalCode ||
+    loadedReceiptObj?.payerFiscalCode ||
+    member?.childFiscalCode ||
+    '';
+  const childFiscalCode =
+    member?.childFiscalCode || loadedReceiptObj?.participantFiscalCode || '';
   const address = member?.childAddress || profile.address;
   const insuranceType = member?.insuranceType || 'Gold';
 
@@ -367,7 +487,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
         customTitle ||
         (firstGd
           ? `Gadget Associativo: ${firstGd.name}`
-          : 'Contributo Gadget Associativo Apuacamp');
+          : 'Contributo Gadget Associativo');
       subtitle = 'Materiale associativo / abbigliamento';
       amount = customAmt ?? (firstGd ? firstGd.unitPrice : 15);
     } else {
@@ -379,7 +499,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     setLineItems((prev) => [
       ...prev,
       {
-        id: `li-${category}-${Date.now()}-${Math.floor(Math.random() * 100)}`,
+        id: newId(`li-${category}`),
         category,
         title,
         subtitle,
@@ -536,7 +656,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       customLines: [
         ...prev.customLines,
         {
-          id: `rl-${Date.now()}`,
+          id: newId('rl'),
           label: newLineLabel.trim(),
           value: newLineValue.trim(),
         },
@@ -552,7 +672,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       customLines: [
         ...prev.customLines,
         {
-          id: `rl-sug-${Date.now()}-${Math.floor(Math.random() * 100)}`,
+          id: newId('rl-sug'),
           label: sug.label,
           value: sug.value,
         },
@@ -581,15 +701,195 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       ? config.documentTitleQuote || 'Preventivo Quota'
       : config.documentTitleReminder || 'Promemoria Saldo';
 
-  const handleDownloadPdf = async () => {
+  const handleChangeDocType = (nextDocType: 'ricevuta' | 'preventivo' | 'sollecito') => {
+    setDocType(nextDocType);
+    setDuplicateConfirmPending(null);
+    if (!isManualNumber) {
+      if (nextDocType === 'ricevuta' && loadedReceiptObj) {
+        setReceiptNumber(loadedReceiptObj.number);
+      } else {
+        setReceiptNumber(computeProposedNumber(nextDocType, docYear));
+      }
+    }
+  };
+
+  const handleChangeDocDate = (nextDate: string) => {
+    setDocDate(nextDate);
+    setDuplicateConfirmPending(null);
+    const nextYr = Number(nextDate.slice(0, 4)) || profile.activeYear;
+    if (!isManualNumber && !loadedReceiptId) {
+      setReceiptNumber(computeProposedNumber(docType, nextYr));
+    }
+  };
+
+  const handleSwitchToNewDistinctReceipt = () => {
+    setLoadedReceiptId(null);
+    setIsManualNumber(false);
+    setDuplicateConfirmPending(null);
+    setReceiptNumber(computeProposedNumber('ricevuta', docYear));
+  };
+
+  const duplicateMatch =
+    docType === 'ricevuta'
+      ? findDuplicateReceiptNumber(
+          receipts,
+          docYear,
+          receiptNumber,
+          loadedReceiptId || undefined
+        )
+      : undefined;
+
+  const is730ClauseActive =
+    docType === 'ricevuta' &&
+    isTaxDeductionClausePresent({
+      legalTaxClause: config.showLegalNotice ? config.legalTaxClause : '',
+      introDeclarationText:
+        config.showIntroDeclaration !== false ? config.introDeclarationText : '',
+      activityDescriptionSubtext: config.activityDescriptionSubtext,
+    });
+
+  const previousPaidSameYearForParticipant = receipts
+    .filter(
+      (r) =>
+        r.status === 'emessa' &&
+        r.year === docYear &&
+        r.id !== loadedReceiptId &&
+        ((member?.id && r.memberId === member.id) ||
+          (childName &&
+            (r.participantName || '').trim().toLowerCase() === childName.trim().toLowerCase()))
+    )
+    .reduce((acc, r) => acc + (Number(r.amount) || 0), 0);
+
+  const tax730Validation = is730ClauseActive
+    ? validateReceiptFor730(
+        {
+          asdFiscalCode: profile.fiscalCode,
+          payerName: parentName,
+          payerFiscalCode: parentFiscalCode,
+          participantName: childName,
+          participantFiscalCode: childFiscalCode,
+          participantBirthDate: member?.birthDate || loadedReceiptObj?.participantBirthDate,
+          description: combinedActivityTitle,
+          amount: finalNetAmount,
+          issueDate: docDate,
+          paymentMethod: customPaymentMethod,
+          previousPaidSameYearForParticipant,
+        },
+        profile.taxDeductionRules
+      )
+    : {
+        warnings: [],
+        hasCriticalWarnings: false,
+        calculatedAge: null,
+        rules: profile.taxDeductionRules || {
+          minAge: 5,
+          maxAge: 18,
+          maxAnnualAmountPerChild: 210,
+        },
+        consultantDisclaimer: '',
+      };
+
+  const normalizeReceiptPaymentMethod = (raw: string): PaymentMethod => {
+    const lower = (raw || '').trim().toLowerCase();
+    if (lower.includes('contant') || lower === 'cash') return 'Contanti';
+    if (lower.includes('paypal')) return 'Paypal';
+    if (lower.includes('pos')) return 'POS';
+    if (lower.includes('bancomat') || lower.includes('carta') || lower.includes('card'))
+      return 'Bancomat';
+    if (lower.includes('online')) return 'Pagam Online';
+    return 'Bonifico';
+  };
+
+  const persistIssuedReceiptAndUploadToDrive = (pdfBlob: Blob, pdfFileName: string) => {
+    if (docType !== 'ricevuta' || !onIssueReceipt) return;
+
+    const nextProg = nextReceiptProgressive(receipts, docYear);
+    let progressive = loadedReceiptObj?.progressive ?? nextProg;
+    if (!loadedReceiptObj && isManualNumber) {
+      const numMatch = receiptNumber.match(/(\d+)/);
+      const parsedNum = numMatch ? Number(numMatch[1]) : NaN;
+      if (Number.isFinite(parsedNum) && parsedNum > 0 && parsedNum !== docYear) {
+        progressive = parsedNum;
+      }
+    }
+
+    const receiptId = loadedReceiptId || newId('rec');
+    const cleanEmail = (recipientEmail || parentEmail || '').trim() || undefined;
+    const issuedRecord: IssuedReceipt = {
+      id: receiptId,
+      number: receiptNumber.trim(),
+      progressive,
+      manualNumber: isManualNumber || loadedReceiptObj?.manualNumber,
+      year: docYear,
+      issueDate: docDate,
+      memberId:
+        member?.id ||
+        booking?.memberId ||
+        loadedReceiptObj?.memberId,
+      participantName: childName,
+      participantFiscalCode: childFiscalCode || undefined,
+      participantBirthDate: member?.birthDate || loadedReceiptObj?.participantBirthDate,
+      payerName: parentName,
+      payerFiscalCode: parentFiscalCode || undefined,
+      payerEmail: cleanEmail,
+      sentTo: cleanEmail || loadedReceiptObj?.sentTo,
+      sentAt: loadedReceiptObj?.sentAt,
+      forTaxDeduction: is730ClauseActive,
+      amount: finalNetAmount,
+      paymentMethod: normalizeReceiptPaymentMethod(customPaymentMethod),
+      description: combinedActivityTitle,
+      lineItems: selectedItems.map((li) => ({ ...li })),
+      transactionId: transaction?.id || loadedReceiptObj?.transactionId,
+      bookingId: booking?.id || loadedReceiptObj?.bookingId,
+      gadgetOrderId: gadgetOrder?.id || loadedReceiptObj?.gadgetOrderId,
+      driveFileId: loadedReceiptObj?.driveFileId,
+      driveUrl: loadedReceiptObj?.driveUrl,
+      status: loadedReceiptObj?.status === 'annullata' ? 'annullata' : 'emessa',
+      cancelledAt: loadedReceiptObj?.cancelledAt,
+      cancelReason: loadedReceiptObj?.cancelReason,
+      createdAt: loadedReceiptObj?.createdAt || new Date().toISOString(),
+    };
+
+    onIssueReceipt(issuedRecord);
+    setLoadedReceiptId(receiptId);
+
+    if (googleUserEmail) {
+      void uploadFileToDrive({
+        name: pdfFileName,
+        content: pdfBlob,
+        mimeType: 'application/pdf',
+        category: 'contabilita_cassa',
+      })
+        .then((uploaded) => {
+          onIssueReceipt({
+            ...issuedRecord,
+            driveFileId: uploaded.id,
+            driveUrl: uploaded.webViewLink,
+          });
+        })
+        .catch((err) => {
+          console.warn('Upload PDF ricevuta su Google Drive non riuscito:', err);
+        });
+    }
+  };
+
+  const handleDownloadPdf = async (bypassDuplicateCheck: boolean = false) => {
+    if (docType === 'ricevuta' && duplicateMatch && !bypassDuplicateCheck) {
+      setDuplicateConfirmPending('download');
+      return;
+    }
+    setDuplicateConfirmPending(null);
+
     if (discountType !== 'none' && discountLabel.trim()) {
       persistDiscountLabelToProfile(discountLabel);
     }
     setIsExportingPdf(true);
     try {
       const safeChild = childName.replace(/[^a-zA-Z0-9_-]/g, '_');
-      await exportReceiptToPdfWithOverlays({
-        fileName: `${badgeTitle.replace(/\s+/g, '_')}_${safeChild}_${docDate}.pdf`,
+      const pdfFileName = `${badgeTitle.replace(/\s+/g, '_')}_${safeChild}_${docDate}.pdf`;
+
+      const pdfBlob = await generateReceiptPdfBlobWithOverlays({
+        fileName: pdfFileName,
         badgeTitle,
         receiptNumber,
         docDate,
@@ -610,6 +910,37 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
         stampDataUrl,
         signatureDataUrl,
       });
+
+      await exportReceiptToPdfWithOverlays({
+        fileName: pdfFileName,
+        badgeTitle,
+        receiptNumber,
+        docDate,
+        docType,
+        profile,
+        config,
+        placeholderCtx,
+        activityTitle: combinedActivityTitle,
+        amount: finalNetAmount,
+        lineItems: selectedItems,
+        discountLabel: discountLabel.trim() || undefined,
+        discountAmount: receiptTotals.discountAmount,
+        voucherApplied: receiptTotals.voucherApplied,
+        paymentMethod: customPaymentMethod,
+        resolvedHeaderDynamic,
+        resolvedTableDynamic,
+        resolvedFooterDynamic,
+        stampDataUrl,
+        signatureDataUrl,
+      });
+
+      persistIssuedReceiptAndUploadToDrive(pdfBlob, pdfFileName);
+      if (docType === 'ricevuta') {
+        setSavedBanner(
+          `Ricevuta N° ${receiptNumber} registrata nel Registro Ricevute e scaricata in PDF!`
+        );
+        setTimeout(() => setSavedBanner(null), 4000);
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -617,11 +948,17 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     }
   };
 
-  const handleConfirmSendGmailWithPdf = async () => {
+  const handleConfirmSendGmailWithPdf = async (bypassDuplicateCheck: boolean = false) => {
     if (!recipientEmail.trim()) {
       setGmailError("Inserisci l'indirizzo email del destinatario.");
       return;
     }
+    if (docType === 'ricevuta' && duplicateMatch && !bypassDuplicateCheck) {
+      setDuplicateConfirmPending('gmail');
+      return;
+    }
+    setDuplicateConfirmPending(null);
+
     if (discountType !== 'none' && discountLabel.trim()) {
       persistDiscountLabelToProfile(discountLabel);
     }
@@ -662,6 +999,8 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
         attachmentPdfBlob: pdfBlob,
       });
 
+      persistIssuedReceiptAndUploadToDrive(pdfBlob, pdfFileName);
+
       if (booking && onUpdateBooking) {
         onUpdateBooking({
           ...booking,
@@ -678,7 +1017,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
 
       setIsGmailPanelOpen(false);
       setSavedBanner(
-        `Email inviata con successo tramite Gmail a ${recipientEmail.trim()} con il PDF "${pdfFileName}" allegato!`
+        `Email inviata con successo tramite Gmail a ${recipientEmail.trim()} con il PDF "${pdfFileName}" allegato e ricevuta N° ${receiptNumber} registrata!`
       );
       setTimeout(() => setSavedBanner(null), 5000);
     } catch (err: any) {
@@ -708,13 +1047,13 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 overflow-y-auto">
       <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full p-6 animate-in fade-in zoom-in-95 duration-150 my-6 max-h-[94vh] overflow-y-auto">
         {/* Top Control Bar (No-Print) */}
-        <div className="no-print flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 mb-4">
+        <div className="no-print flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 mb-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-bold text-slate-900 text-xs sm:text-sm">Tipo Documento:</span>
             <div className="flex items-center bg-slate-100 p-0.5 rounded-lg text-xs">
               <button
                 type="button"
-                onClick={() => setDocType('ricevuta')}
+                onClick={() => handleChangeDocType('ricevuta')}
                 className={`px-3 py-1 rounded-md font-medium transition-colors ${
                   docType === 'ricevuta'
                     ? 'bg-white text-emerald-800 shadow-2xs font-bold'
@@ -725,7 +1064,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setDocType('preventivo')}
+                onClick={() => handleChangeDocType('preventivo')}
                 className={`px-3 py-1 rounded-md font-medium transition-colors ${
                   docType === 'preventivo'
                     ? 'bg-white text-blue-800 shadow-2xs font-bold'
@@ -736,7 +1075,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setDocType('sollecito')}
+                onClick={() => handleChangeDocType('sollecito')}
                 className={`px-3 py-1 rounded-md font-medium transition-colors ${
                   docType === 'sollecito'
                     ? 'bg-white text-amber-800 shadow-2xs font-bold'
@@ -766,10 +1105,10 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                   onOpenFullConfigPanel();
                 }}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors"
-                title="Apri il pannello completo di configurazione ricevute, modelli email e diciture sconto"
+                title="Apri il pannello completo di configurazione ricevute, Registro Ricevute e modelli email"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                <span>Modelli & Config</span>
+                <span>Registro & Config</span>
               </button>
             )}
             <button
@@ -794,6 +1133,184 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* PROGRESSIVE RECEIPT NUMBER, DATE & PAYMENT METHOD BAR (Phase 3.2 - Always visible) */}
+        <div className="no-print mb-3 p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 text-xs space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {docType === 'ricevuta' ? (
+                loadedReceiptObj ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-700 text-white font-bold text-[11px]">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>
+                      Ricevuta già emessa in Registro: N° {loadedReceiptObj.number}
+                      {loadedReceiptObj.status === 'annullata' ? ' (ANNULLATA)' : ''}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white border border-emerald-300 text-emerald-900 font-semibold text-[11px]">
+                    <span>
+                      Progressivo proposto ({docYear}): il numero verrà registrato solo cliccando
+                      &quot;Scarica PDF&quot; o &quot;Invia via Gmail&quot;
+                    </span>
+                  </span>
+                )
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-900 font-semibold text-[11px]">
+                  <span>
+                    {docType === 'preventivo' ? 'Preventivo' : 'Sollecito'}: non consuma la
+                    numerazione progressiva delle ricevute
+                  </span>
+                </span>
+              )}
+            </div>
+
+            {docType === 'ricevuta' && loadedReceiptObj && (
+              <button
+                type="button"
+                onClick={handleSwitchToNewDistinctReceipt}
+                className="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold text-[11px] transition-colors"
+              >
+                + Emetti Nuova Ricevuta Distinta
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                {docType === 'ricevuta' ? 'N° Ricevuta Progressivo' : 'Riferimento Documento'}
+              </label>
+              <input
+                type="text"
+                value={receiptNumber}
+                onChange={(e) => {
+                  setReceiptNumber(e.target.value);
+                  setIsManualNumber(true);
+                  setDuplicateConfirmPending(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-bold text-slate-900"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                Data Emissione
+              </label>
+              <input
+                type="date"
+                value={docDate}
+                onChange={(e) => handleChangeDocDate(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-0.5">
+                Modalità di Pagamento
+              </label>
+              <select
+                value={
+                  ['Bonifico', 'PayPal', 'Carta', 'POS', 'Contanti'].includes(customPaymentMethod)
+                    ? customPaymentMethod
+                    : 'Altro'
+                }
+                onChange={(e) => {
+                  if (e.target.value !== 'Altro') {
+                    setCustomPaymentMethod(e.target.value);
+                  }
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
+              >
+                <option value="Bonifico">Bonifico</option>
+                <option value="PayPal">PayPal</option>
+                <option value="Carta">Carta</option>
+                <option value="POS">POS</option>
+                <option value="Contanti">Contanti</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* DUPLICATE RECEIPT NUMBER CONFIRMATION BANNER (Phase 3.2) */}
+        {duplicateConfirmPending && duplicateMatch && (
+          <div className="no-print mb-4 p-3.5 rounded-xl bg-rose-50 border-2 border-rose-300 text-rose-950 text-xs space-y-2.5">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold text-sm">
+                  Conferma Numero Ricevuta Duplicato ({receiptNumber})
+                </div>
+                <p className="text-[11px] text-rose-800 mt-0.5">
+                  Il numero di ricevuta <strong className="font-mono">{receiptNumber}</strong> è già
+                  stato registrato nell&apos;anno <strong>{docYear}</strong> (emessa il{' '}
+                  {duplicateMatch.issueDate} a {duplicateMatch.payerName} per{' '}
+                  {formatEuro(duplicateMatch.amount)}). Vuoi forzare comunque l&apos;emissione con
+                  questo numero o usare il primo progressivo libero?
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const nextFree = computeProposedNumber('ricevuta', docYear);
+                  setReceiptNumber(nextFree);
+                  setIsManualNumber(false);
+                  setDuplicateConfirmPending(null);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-semibold"
+              >
+                Usa Progressivo Libero ({computeProposedNumber('ricevuta', docYear)})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const action = duplicateConfirmPending;
+                  setDuplicateConfirmPending(null);
+                  if (action === 'download') {
+                    void handleDownloadPdf(true);
+                  } else if (action === 'gmail') {
+                    void handleConfirmSendGmailWithPdf(true);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-800 text-white font-bold"
+              >
+                Conferma ed Emetti comunque con N° {receiptNumber}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 730 TAX DEDUCTION VALIDATION WARNING BOX (Phase 3.4 - Non-blocking) */}
+        {is730ClauseActive && tax730Validation.warnings.length > 0 && (
+          <div
+            id="receipt-730-warning-box"
+            className="no-print mb-4 p-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-amber-950 text-xs space-y-2"
+          >
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="font-bold text-amber-950 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>
+                  Controlli Detrazione IRPEF 19% Spese Sportive Minori (Modello 730 — Art. 15, c. 1,
+                  lett. i-quinquies TUIR)
+                </span>
+              </div>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                Avviso non bloccante
+              </span>
+            </div>
+            <ul className="list-disc pl-5 space-y-1 text-[11px] text-amber-900">
+              {tax730Validation.warnings.map((w) => (
+                <li key={w.code} className="font-medium">
+                  {w.message}
+                </li>
+              ))}
+            </ul>
+            <div className="text-[10px] text-amber-800 italic pt-1 border-t border-amber-200/80">
+              Puoi comunque procedere con l&apos;emissione della ricevuta. Verificare i requisiti
+              aggiornati con il proprio consulente fiscale.
+            </div>
+          </div>
+        )}
 
         {/* COMPOSITORE VOCI RICEVUTA INTELLIGENTE + SCONTI EVENTO / DICITURE SALVABILI & BUONI SPESA (No-Print) */}
         <div className="no-print mb-4 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs">
@@ -1193,7 +1710,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 <button
                   type="button"
                   disabled={isSendingGmail}
-                  onClick={handleConfirmSendGmailWithPdf}
+                  onClick={() => handleConfirmSendGmailWithPdf(false)}
                   className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-bold shadow-xs disabled:opacity-50"
                 >
                   <Send className="w-3.5 h-3.5" />
@@ -1345,7 +1862,11 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 <input
                   type="text"
                   value={receiptNumber}
-                  onChange={(e) => setReceiptNumber(e.target.value)}
+                  onChange={(e) => {
+                    setReceiptNumber(e.target.value);
+                    setIsManualNumber(true);
+                    setDuplicateConfirmPending(null);
+                  }}
                   className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white font-mono"
                 />
               </div>
@@ -1354,7 +1875,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                 <input
                   type="date"
                   value={docDate}
-                  onChange={(e) => setDocDate(e.target.value)}
+                  onChange={(e) => handleChangeDocDate(e.target.value)}
                   className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white font-mono"
                 />
               </div>
@@ -1645,12 +2166,12 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                     <span>Overlay Firma del Presidente</span>
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    Carica l'immagine della firma (PNG/JPG) o genera la firma calligrafica.
+                    Consigliato: carica la scansione della firma reale del Presidente (PNG/JPG).
                   </p>
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
                     <label className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg font-semibold cursor-pointer">
                       <Upload className="w-3.5 h-3.5" />
-                      <span>{signatureDataUrl ? 'Cambia Firma' : 'Carica Firma'}</span>
+                      <span>{signatureDataUrl ? 'Cambia Firma Reale' : 'Carica Firma Reale'}</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -1667,10 +2188,11 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
                           setConfig((prev) => ({ ...prev, showSignature: true }));
                         }
                       }}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium text-[11px]"
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium text-[10.5px]"
+                      title="Genera una scritta calligrafica dal nome del Presidente (solo estetica, non ha valore legale di firma)"
                     >
-                      <Wand2 className="w-3 h-3" />
-                      <span>Genera</span>
+                      <Wand2 className="w-3 h-3 shrink-0" />
+                      <span>Firma grafica generata (solo estetica, non ha valore di firma)</span>
                     </button>
                     {signatureDataUrl && (
                       <button
@@ -2087,7 +2609,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
             </button>
             <button
               type="button"
-              onClick={handleDownloadPdf}
+              onClick={() => handleDownloadPdf(false)}
               disabled={isExportingPdf}
               className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors shadow-xs"
             >

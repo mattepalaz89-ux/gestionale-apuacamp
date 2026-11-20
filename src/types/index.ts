@@ -1,8 +1,45 @@
-export type InsuranceType = 'Base' | 'Summer' | 'Gold' | 'Platinum';
+export type BuiltInInsuranceType = 'Base' | 'Summer' | 'Gold' | 'Platinum';
+export type InsuranceType = BuiltInInsuranceType | (string & {});
 
-export type AgeGroup = '3-6' | '6-11' | '11-14';
+export type BuiltInAgeGroup = '3-6' | '6-11' | '11-14';
+export type AgeGroup = BuiltInAgeGroup | (string & {});
 
 export type CardValidityType = 'solare' | 'tessera_365';
+
+export interface CardTypeConfig {
+  id: string;
+  label: string;
+  defaultPrice?: number;
+  color?: string;
+}
+
+export interface AgeGroupConfig {
+  id: string;
+  label: string;
+  minAge?: number;
+  maxAge?: number;
+}
+
+export interface CashCategoryConfig {
+  id: string;
+  label: string;
+  kind: 'entrata' | 'uscita' | 'entrambe';
+}
+
+export interface EventCategoryConfig {
+  id: string;
+  label: string;
+  cashCategoryId: string;
+}
+
+export interface DeadlineTemplateConfig {
+  id: string;
+  title: string;
+  month: number;
+  day: number;
+  recurrence: 'annuale' | 'mensile';
+  enabled: boolean;
+}
 
 export interface MemberCardRecord {
   id: string;
@@ -17,6 +54,7 @@ export interface MemberCardRecord {
 
 export interface Member {
   id: string;
+  isMinor?: boolean; // default true per retrocompatibilità; se false: socio adulto (campi genitore non obbligatori)
   childName: string;
   birthDate: string;
   birthPlace: string;
@@ -48,7 +86,7 @@ export interface Member {
   createdAt?: string;
 }
 
-export type CashCategory =
+export type BuiltInCashCategory =
   | 'Evento'
   | 'SummerCamp'
   | 'Selva'
@@ -62,6 +100,8 @@ export type CashCategory =
   | 'Bandi e Fondi Pubbl'
   | 'Donazioni enti'
   | 'Altro';
+
+export type CashCategory = BuiltInCashCategory | (string & {});
 
 export type PaymentMethod =
   | 'Bonifico'
@@ -98,6 +138,29 @@ export interface RecurringExpensePlan {
   notes?: string;
 }
 
+export type StaffPaymentKind =
+  | 'compenso_sportivo'
+  | 'servizi_guida'
+  | 'progettazione'
+  | 'rimborso_spese';
+
+export type BuiltInPaymentAccountId = 'banca' | 'paypal' | 'cassa';
+export type PaymentAccountId = BuiltInPaymentAccountId | string;
+
+export interface CustomPaymentAccount {
+  id: string;
+  name: string;
+  initialBalance: number;
+}
+
+export type PaymentAccountsMap = Partial<Record<PaymentMethod | string, PaymentAccountId>>;
+
+export interface StaffThresholdsConfig {
+  inpsExemption: number; // default 5000 (soglia contributiva INPS D.Lgs. 36/2021)
+  irpefExemption: number; // default 15000 (soglia fiscale IRPEF D.Lgs. 36/2021)
+  warningPercent: number; // default 80 (80% di 5000 = 4000 €)
+}
+
 export interface CashTransaction {
   id: string;
   date: string; // ISO "YYYY-MM-DD" or "DD/MM/YYYY"
@@ -106,6 +169,13 @@ export interface CashTransaction {
   expense: number | null;
   method: PaymentMethod;
   description: string;
+  memberId?: string;
+  bookingId?: string;
+  staffId?: string;
+  gadgetOrderId?: string;
+  receiptId?: string;
+  staffPaymentKind?: StaffPaymentKind;
+  accountId?: PaymentAccountId; // Conto effettivo movimentato (es. 'banca', 'paypal', 'cassa' o conto personalizzato)
   relatedMemberName?: string;
   relatedEventId?: string;
   invoiceArchivedUrl?: string;
@@ -117,10 +187,20 @@ export interface CashTransaction {
 
 export type EventDiscountType = 'none' | 'fixed' | 'percent';
 
+export type BuiltInEventCategory =
+  | 'rifugio'
+  | 'summer_camp'
+  | 'wild_camp'
+  | 'selva'
+  | 'giornata'
+  | 'altro';
+
+export type EventCategoryId = BuiltInEventCategory | (string & {});
+
 export interface EventItem {
   id: string;
   name: string;
-  category: 'rifugio' | 'summer_camp' | 'wild_camp' | 'selva' | 'giornata' | 'altro';
+  category: EventCategoryId;
   date: string; // YYYY-MM-DD
   endDate?: string; // YYYY-MM-DD
   location: string;
@@ -182,6 +262,7 @@ export interface GadgetItem {
 export interface GadgetOrder {
   id: string;
   date: string;
+  memberId?: string;
   childName: string;
   parentName: string;
   parentEmail: string;
@@ -290,6 +371,9 @@ export interface ArchivedFiscalYear {
   bookings: EventBooking[];
   gadgetOrders: GadgetOrder[];
   membersSnapshot: Member[];
+  driveFileId?: string;
+  driveWebViewLink?: string;
+  isLightSummaryOnly?: boolean;
   driveArchiveJsonUrl?: string;
   driveArchiveSheetUrl?: string;
 }
@@ -302,6 +386,12 @@ export interface StaffMember {
   phone?: string;
   email?: string;
   iban?: string;
+  /** Compensi sportivi percepiti presso altre ASD/SSD/enti nell'anno solare per il calcolo delle soglie 5.000 € INPS / 15.000 € IRPEF */
+  otherAssociationsCompensation?: number;
+  /** Mappa annuale opzionale: anno -> compensi percepiti presso altri enti in quell'anno solare */
+  otherAssociationsCompensationByYear?: Record<number, number>;
+  /** Note o riferimento autocertificazione compensi altri enti */
+  otherAssociationsNotes?: string;
 }
 
 export interface StaffPayment {
@@ -324,7 +414,8 @@ export type NotificationCategory =
   | 'scadenze_manuali'
   | 'tessere'
   | 'pagamenti'
-  | 'moduli';
+  | 'moduli'
+  | 'staff_soglie';
 
 export interface NotificationItem {
   id: string;
@@ -343,7 +434,8 @@ export interface NotificationItem {
     | 'event'
     | 'governance'
     | 'grant'
-    | 'custom_deadline';
+    | 'custom_deadline'
+    | 'staff';
   actionLabel?: string;
   isCustomDeadline?: boolean;
 }
@@ -531,7 +623,7 @@ export interface CriticalDeadlineItem {
   isCustom?: boolean;
 }
 
-export type InsuranceTypeLabels = Record<InsuranceType, string>;
+export type InsuranceTypeLabels = Record<string, string>;
 
 export type DigitalCardFieldId =
   | 'associationName'
@@ -620,6 +712,44 @@ export interface ReceiptLineItem {
   enabled: boolean;
 }
 
+export interface TaxDeductionRules {
+  minAge: number; // default 5
+  maxAge: number; // default 18
+  maxAnnualAmountPerChild: number; // default 210
+}
+
+export interface IssuedReceipt {
+  id: string;
+  year: number;               // anno di emissione
+  progressive: number;        // 1, 2, 3, ...
+  number: string;             // es. "12/2027" (formato configurabile)
+  manualNumber?: boolean;     // true se l'utente ha scritto il numero a mano
+  issueDate: string;          // YYYY-MM-DD
+  status: 'emessa' | 'annullata';
+  cancelReason?: string;
+  cancelledAt?: string;
+  createdAt?: string;
+  payerName: string;
+  payerFiscalCode?: string;
+  payerEmail?: string;
+  participantName?: string;   // praticante (es. il bambino)
+  participantFiscalCode?: string;
+  participantBirthDate?: string;
+  description: string;
+  lineItems?: ReceiptLineItem[];
+  amount: number;
+  paymentMethod: PaymentMethod;
+  memberId?: string;
+  bookingId?: string;
+  transactionId?: string;
+  gadgetOrderId?: string;
+  driveFileId?: string;
+  driveUrl?: string;
+  sentTo?: string;
+  sentAt?: string;
+  forTaxDeduction?: boolean;
+}
+
 export type EmailTemplateId =
   | 'ricevuta_evento'
   | 'ricevuta_tessera'
@@ -636,6 +766,7 @@ export interface EmailTemplateConfig {
 }
 
 export interface AssociationProfile {
+  associationId?: string;
   name: string;
   legalType: string;
   fiscalCode: string;
@@ -649,6 +780,7 @@ export interface AssociationProfile {
   driveRootFolderId?: string;
   driveRootFolderUrl?: string;
   driveMinutesFolderId?: string;
+  driveBackupsFolderId?: string;
   membersGoogleFormId?: string;
   membersGoogleFormUrl?: string;
   membersGoogleSheetId?: string;
@@ -671,6 +803,27 @@ export interface AssociationProfile {
   hideResolvedDeadlines?: boolean;
   duplicateDetectionMode?: DuplicateDetectionMode;
   ignoredDuplicateSignatures?: string[];
+  receiptNumberFormat?: string; // default "{n}/{anno}"
+  taxDeductionRules?: TaxDeductionRules;
+  staffThresholds?: StaffThresholdsConfig;
+  paymentAccounts?: PaymentAccountsMap; // default { Bonifico: 'banca', POS: 'banca', Bancomat: 'banca', 'Pagam Online': 'banca', Paypal: 'paypal', Contanti: 'cassa' }
+  paypalExpenseSourceAccount?: PaymentAccountId; // default 'banca' (strumento predefinito dentro PayPal per le uscite)
+  customPaymentAccounts?: CustomPaymentAccount[]; // conti aggiuntivi configurabili dall'utente
+  initialFundPaypal?: number; // saldo iniziale conto PayPal (default 0)
+  initialFundMismatchNotice?: {
+    oldInitialFund: number;
+    realignedInitialFund: number;
+  };
+  archiveHealthDataRetentionYears?: number; // 0 o undefined = disattivato; >0 = anonimizza allergie/note salute negli archivi più vecchi di N anni
+  onboardingCompleted?: boolean; // true quando l'associazione ha completato il wizard di primo avvio
+  hasAdultMembers?: boolean; // se true, l'associazione gestisce anche soci adulti (etichette "Socio/Partecipante" e campi genitore facoltativi)
+  showApuacampAttributionInDocs?: boolean; // se true, mostra l'attribuzione piattaforma anche nei PDF/tessere generati
+  cardTypes?: CardTypeConfig[];
+  ageGroups?: AgeGroupConfig[];
+  cashCategories?: CashCategoryConfig[];
+  eventCategories?: EventCategoryConfig[];
+  deadlineTemplates?: DeadlineTemplateConfig[];
+  deadlinePreset?: 'us_acli' | 'asd_generica';
 }
 
 export interface CashFlowSummary {
@@ -682,5 +835,59 @@ export interface CashFlowSummary {
   netBalance: number;
   currentCash: number;
 }
+
+export interface AppState {
+  schemaVersion: number;
+  version: number;
+  updatedAt: string;
+  updatedBy: string;
+  profile: AssociationProfile;
+  initialFund: number;
+  initialFundBank: number;
+  initialFundCash: number;
+  members: Member[];
+  transactions: CashTransaction[];
+  recurringExpenses: RecurringExpensePlan[];
+  events: EventItem[];
+  bookings: EventBooking[];
+  gadgets: GadgetItem[];
+  gadgetOrders: GadgetOrder[];
+  staff: StaffMember[];
+  staffPayments?: StaffPayment[];
+  roles: AssociationRole[];
+  assemblies: AssemblyMeeting[];
+  grants: GrantItem[];
+  archivedYears: ArchivedFiscalYear[];
+  receipts: IssuedReceipt[];
+}
+
+export type DriveBackupReason =
+  | 'daily'
+  | 'pre-import'
+  | 'pre-archive'
+  | 'pre-bulk-delete'
+  | 'pre-overwrite'
+  | 'manual';
+
+export interface DriveBackupEntry {
+  id: string;
+  name: string;
+  createdTime?: string;
+  modifiedTime?: string;
+  size?: string;
+  webViewLink?: string;
+  reason?: DriveBackupReason;
+  version?: number;
+}
+
+export interface DriveDbCandidate {
+  id: string;
+  name: string;
+  modifiedTime?: string;
+  webViewLink?: string;
+  parents?: string[];
+  folderName?: string;
+}
+
 
 

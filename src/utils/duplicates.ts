@@ -7,6 +7,7 @@ import {
 } from '../types';
 import { parseAnyDate, diffDays } from './notifications';
 import { formatEuro } from './finance';
+import { newId } from './ids';
 
 const ASD_BOILERPLATE_STOPWORDS = new Set([
   'quota',
@@ -295,7 +296,51 @@ export function extractTransactionIdentity(
   const descTokens = normDesc.split(' ').filter(Boolean);
   const descTokenSet = new Set(descTokens);
 
-  // 1. Check explicit relatedMemberName first
+  // 0a. Structured memberId link (Phase 4.2): authoritative person key
+  if (tx.memberId && tx.memberId.trim()) {
+    const matchedMember = members.find((m) => m.id === tx.memberId);
+    const displayName =
+      matchedMember?.childName ||
+      (tx.relatedMemberName && tx.relatedMemberName.trim()
+        ? toTitleCase(tx.relatedMemberName.trim())
+        : `Socio #${tx.memberId}`);
+    const nameTokens = normalizeTextForMatching(
+      matchedMember?.childName || tx.relatedMemberName || ''
+    )
+      .split(' ')
+      .filter((t) => t.length >= 2 && !ASD_BOILERPLATE_STOPWORDS.has(t));
+    return {
+      canonicalPersonKey: `member:${tx.memberId.trim()}`,
+      displayPersonName: displayName,
+      meaningfulTokens: nameTokens,
+      normalizedFullDescription: normDesc,
+      isVerifiedPerson: true,
+    };
+  }
+
+  // 0b. Structured staffId link (Phase 4.2): authoritative person key
+  if (tx.staffId && tx.staffId.trim()) {
+    const matchedStaff = staff.find((s) => s.id === tx.staffId);
+    const displayName =
+      matchedStaff?.name ||
+      (tx.relatedMemberName && tx.relatedMemberName.trim()
+        ? toTitleCase(tx.relatedMemberName.trim())
+        : `Collaboratore #${tx.staffId}`);
+    const nameTokens = normalizeTextForMatching(
+      matchedStaff?.name || tx.relatedMemberName || ''
+    )
+      .split(' ')
+      .filter((t) => t.length >= 2 && !ASD_BOILERPLATE_STOPWORDS.has(t));
+    return {
+      canonicalPersonKey: `staff:${tx.staffId.trim()}`,
+      displayPersonName: displayName,
+      meaningfulTokens: nameTokens,
+      normalizedFullDescription: normDesc,
+      isVerifiedPerson: true,
+    };
+  }
+
+  // 1. Check explicit relatedMemberName first (legacy transactions without memberId/staffId)
   if (tx.relatedMemberName && tx.relatedMemberName.trim()) {
     const normRelated = normalizeTextForMatching(tx.relatedMemberName);
     const relTokens = normRelated
@@ -400,6 +445,14 @@ export function areTransactionsPotentialDuplicates(
   maxDaysWindow: number = 7
 ): { isDuplicate: boolean; daysApart: number; personName: string; reason: string } {
   if (txA.id === txB.id) {
+    return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
+  }
+
+  // If both transactions have explicit structured memberId or staffId and they differ, they are NEVER the same person
+  if (txA.memberId && txB.memberId && txA.memberId !== txB.memberId) {
+    return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
+  }
+  if (txA.staffId && txB.staffId && txA.staffId !== txB.staffId) {
     return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
   }
 
@@ -629,10 +682,9 @@ export function detectDuplicatesForNewTransactions(
  * the duplicate alert & popup deletion workflow on demand.
  */
 export function createSampleDuplicateTransactions(activeYear: number = 2027): CashTransaction[] {
-  const now = Date.now();
   return [
     {
-      id: `tx-dup-demo-1a-${now}`,
+      id: newId('tx-dup-demo-1a'),
       date: `${activeYear}-03-10`,
       category: 'Evento',
       income: 130,
@@ -642,7 +694,7 @@ export function createSampleDuplicateTransactions(activeYear: number = 2027): Ca
       relatedMemberName: 'Mario Rossi',
     },
     {
-      id: `tx-dup-demo-1b-${now}`,
+      id: newId('tx-dup-demo-1b'),
       date: `${activeYear}-03-13`,
       category: 'Evento',
       income: 130,
@@ -652,7 +704,7 @@ export function createSampleDuplicateTransactions(activeYear: number = 2027): Ca
       relatedMemberName: 'Mario Rossi',
     },
     {
-      id: `tx-dup-demo-2a-${now}`,
+      id: newId('tx-dup-demo-2a'),
       date: `${activeYear}-04-02`,
       category: 'Tessere',
       income: 15,
@@ -662,7 +714,7 @@ export function createSampleDuplicateTransactions(activeYear: number = 2027): Ca
       relatedMemberName: 'Sofia Bianchi',
     },
     {
-      id: `tx-dup-demo-2b-${now}`,
+      id: newId('tx-dup-demo-2b'),
       date: `${activeYear}-04-05`,
       category: 'Tessere',
       income: 15,

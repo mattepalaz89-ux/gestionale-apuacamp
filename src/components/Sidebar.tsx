@@ -63,6 +63,8 @@ interface SidebarProps {
   driveSyncState?: 'idle' | 'loading' | 'saving' | 'saved' | 'error';
   lastDriveSavedAt?: string | null;
   onReloadFromDrive?: () => void;
+  onOpenLegalPage?: (page: 'privacy' | 'termini') => void;
+  onOpenOnboardingWizard?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -87,6 +89,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   driveSyncState = 'idle',
   lastDriveSavedAt,
   onReloadFromDrive,
+  onOpenLegalPage,
+  onOpenOnboardingWizard,
 }) => {
   const [isEditingBrand, setIsEditingBrand] = useState(false);
   const [draftName, setDraftName] = useState(associationName);
@@ -580,17 +584,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div className="text-[10px] text-slate-400">Include liquidità C/C e contanti</div>
           </div>
-          <div className="pt-2 border-t border-slate-800/80 text-[10px] text-slate-400 flex items-center justify-between">
-            <span>
-              Creato da <strong className="text-emerald-400">ASD Apuacamp</strong>
-            </span>
-            <button
-              type="button"
-              onClick={() => handleSelectNav('backup')}
-              className="text-emerald-400 hover:underline font-semibold"
-            >
-              Cambia ASD
-            </button>
+          <div className="pt-2 border-t border-slate-800/80 text-[10px] text-slate-400 space-y-1.5">
+            <div className="flex items-center justify-between gap-1">
+              <span className="truncate">
+                Creato da <strong className="text-emerald-400">Matteo Palazzi</strong> (ASD Apuacamp)
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onOpenOnboardingWizard) {
+                    onOpenOnboardingWizard();
+                  } else {
+                    handleSelectNav('backup');
+                  }
+                }}
+                className="text-emerald-400 hover:underline font-semibold shrink-0"
+              >
+                Configura ASD
+              </button>
+            </div>
+            {onOpenLegalPage && (
+              <div className="flex items-center justify-between text-[9.5px] text-slate-500 pt-0.5">
+                <a
+                  href="/privacy"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onOpenLegalPage('privacy');
+                  }}
+                  className="hover:text-emerald-300 hover:underline transition-colors"
+                >
+                  Privacy (/privacy)
+                </a>
+                <span>•</span>
+                <a
+                  href="/termini"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onOpenLegalPage('termini');
+                  }}
+                  className="hover:text-emerald-300 hover:underline transition-colors"
+                >
+                  Termini & Licenza (/termini)
+                </a>
+              </div>
+            )}
           </div>
         </div>
       </aside>

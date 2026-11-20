@@ -7,15 +7,27 @@ import {
   User,
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { GoogleFormFieldConfig } from '../types';
+import {
+  AppState,
+  DriveBackupEntry,
+  DriveBackupReason,
+  DriveDbCandidate,
+  GoogleFormFieldConfig,
+} from '../types';
 import {
   buildGoogleFormBatchRequests,
   getEffectiveFormFieldsForArea,
 } from '../utils/formAndReceiptTemplates';
-
+import { deriveAssociationId, hydrateAppState } from '../utils/storage';
+import {
+  sanitizeEmailHeader,
+  isValidEmailAddress,
+  encodeMimeAttachmentFilename,
+  sanitizeSpreadsheetRows,
+} from '../utils/sanitize';
 
 export const SCOPES = [
-  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/forms.body',
   'https://www.googleapis.com/auth/forms.responses.readonly',
@@ -196,9 +208,11 @@ export interface DriveFileItem {
   name: string;
   mimeType: string;
   webViewLink?: string;
+  createdTime?: string;
   modifiedTime?: string;
   size?: string;
   parents?: string[];
+  appProperties?: Record<string, string>;
 }
 
 export async function listDriveFiles(query?: string): Promise<DriveFileItem[]> {
@@ -208,7 +222,7 @@ export async function listDriveFiles(query?: string): Promise<DriveFileItem[]> {
   const q = query || 'trashed = false';
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
     q
-  )}&fields=files(id,name,mimeType,webViewLink,modifiedTime,size,parents)&orderBy=modifiedTime desc&pageSize=50`;
+  )}&fields=files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,appProperties)&orderBy=modifiedTime desc&pageSize=100`;
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -226,51 +240,73 @@ export async function listDriveFiles(query?: string): Promise<DriveFileItem[]> {
   return data.files || [];
 }
 
+// Module-level locks to prevent concurrent calls from creating duplicate folders on Google Drive
+const folderCreationLocks = new Map<string, Promise<DriveFileItem>>();
+let structureCreationPromise: Promise<{
+  rootFolder: DriveFileItem;
+  subfolders: Record<DriveCategoryKey, DriveFileItem>;
+}> | null = null;
+
 export async function findOrCreateDriveFolder(
   folderName: string,
   parentFolderId?: string
 ): Promise<DriveFileItem> {
-  const token = await getAccessToken();
-  if (!token) throw new Error('AUTH_REQUIRED');
-
-  const safeName = folderName.replace(/'/g, "\\'");
-  const parentClause = parentFolderId ? ` and '${parentFolderId}' in parents` : '';
-  const q = `mimeType = 'application/vnd.google-apps.folder' and name = '${safeName}'${parentClause} and trashed = false`;
-  const existing = await listDriveFiles(q);
-  if (existing.length > 0) {
-    return existing[0];
+  const lockKey = `${parentFolderId || 'root'}::${folderName}`;
+  const inFlight = folderCreationLocks.get(lockKey);
+  if (inFlight) {
+    return inFlight;
   }
 
-  const bodyPayload: Record<string, any> = {
-    name: folderName,
-    mimeType: 'application/vnd.google-apps.folder',
-  };
-  if (parentFolderId) {
-    bodyPayload.parents = [parentFolderId];
-  }
+  const creationTask = (async (): Promise<DriveFileItem> => {
+    const token = await getAccessToken();
+    if (!token) throw new Error('AUTH_REQUIRED');
 
-  const res = await fetch(
-    'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,parents',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(bodyPayload),
+    const safeName = folderName.replace(/'/g, "\\'");
+    const parentClause = parentFolderId ? ` and '${parentFolderId}' in parents` : '';
+    const q = `mimeType = 'application/vnd.google-apps.folder' and name = '${safeName}'${parentClause} and trashed = false`;
+    const existing = await listDriveFiles(q);
+    if (existing.length > 0) {
+      return existing[0];
     }
-  );
 
-  if (res.status === 401) {
-    cachedAccessToken = null;
-    saveSessionAccessToken(null);
-    throw new Error('AUTH_REQUIRED');
+    const bodyPayload: Record<string, any> = {
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+    };
+    if (parentFolderId) {
+      bodyPayload.parents = [parentFolderId];
+    }
+
+    const res = await fetch(
+      'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,parents',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(bodyPayload),
+      }
+    );
+
+    if (res.status === 401) {
+      cachedAccessToken = null;
+      saveSessionAccessToken(null);
+      throw new Error('AUTH_REQUIRED');
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || 'Impossibile creare la cartella su Google Drive');
+    }
+    return await res.json();
+  })();
+
+  folderCreationLocks.set(lockKey, creationTask);
+  try {
+    return await creationTask;
+  } finally {
+    folderCreationLocks.delete(lockKey);
   }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || 'Impossibile creare la cartella su Google Drive');
-  }
-  return await res.json();
 }
 
 /**
@@ -286,25 +322,65 @@ export async function getOrCreateDriveCategoryFolder(
 }
 
 /**
- * Ensures the entire "Gestionale ASD" folder tree (all 7 category folders) is created on Google Drive
+ * Ensures the entire "Gestionale ASD" folder tree (all 7 category folders) is created on Google Drive.
+ * Uses a module-level promise lock so concurrent calls never duplicate folders.
  */
 export async function ensureGestionaleDriveStructure(): Promise<{
   rootFolder: DriveFileItem;
   subfolders: Record<DriveCategoryKey, DriveFileItem>;
 }> {
-  const rootFolder = await findOrCreateDriveFolder(DRIVE_ROOT_FOLDER_NAME);
-  const keys = Object.keys(DRIVE_CATEGORY_FOLDERS) as DriveCategoryKey[];
-  const results = await Promise.all(
-    keys.map(async (k) => {
+  if (structureCreationPromise) {
+    return structureCreationPromise;
+  }
+
+  structureCreationPromise = (async () => {
+    const rootFolder = await findOrCreateDriveFolder(DRIVE_ROOT_FOLDER_NAME);
+    const keys = Object.keys(DRIVE_CATEGORY_FOLDERS) as DriveCategoryKey[];
+    const results: Array<readonly [DriveCategoryKey, DriveFileItem]> = [];
+    // Execute sequentially under lock to avoid race conditions on Drive API
+    for (const k of keys) {
       const folder = await findOrCreateDriveFolder(
         DRIVE_CATEGORY_FOLDERS[k].folderName,
         rootFolder.id
       );
-      return [k, folder] as const;
-    })
-  );
-  const subfolders = Object.fromEntries(results) as Record<DriveCategoryKey, DriveFileItem>;
-  return { rootFolder, subfolders };
+      results.push([k, folder] as const);
+    }
+    const subfolders = Object.fromEntries(results) as Record<DriveCategoryKey, DriveFileItem>;
+    return { rootFolder, subfolders };
+  })();
+
+  try {
+    return await structureCreationPromise;
+  } finally {
+    structureCreationPromise = null;
+  }
+}
+
+/**
+ * Patches custom appProperties on a Drive file without modifying its media content.
+ */
+export async function patchDriveFileAppProperties(
+  fileId: string,
+  appProperties: Record<string, string>
+): Promise<void> {
+  const token = await getAccessToken();
+  if (!token) return;
+  try {
+    const safeId = encodeURIComponent(fileId.trim());
+    await fetch(
+      `https://www.googleapis.com/drive/v3/files/${safeId}?fields=id,appProperties`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ appProperties }),
+      }
+    );
+  } catch (err) {
+    console.warn('Impossibile aggiornare appProperties sul file Drive:', err);
+  }
 }
 
 /**
@@ -336,6 +412,7 @@ export async function uploadFileToDrive(params: {
   folderId?: string;
   category?: DriveCategoryKey;
   existingFileId?: string;
+  appProperties?: Record<string, string>;
 }): Promise<DriveFileItem> {
   const token = await getAccessToken();
   if (!token) throw new Error('AUTH_REQUIRED');
@@ -350,7 +427,7 @@ export async function uploadFileToDrive(params: {
   if (params.existingFileId) {
     const safeExistingId = encodeURIComponent(params.existingFileId.trim());
     const patchRes = await fetch(
-      `https://www.googleapis.com/upload/drive/v3/files/${safeExistingId}?uploadType=media&fields=id,name,mimeType,webViewLink,modifiedTime`,
+      `https://www.googleapis.com/upload/drive/v3/files/${safeExistingId}?uploadType=media&fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,appProperties`,
       {
         method: 'PATCH',
         headers: {
@@ -367,7 +444,16 @@ export async function uploadFileToDrive(params: {
       throw new Error('AUTH_REQUIRED');
     }
     if (patchRes.ok) {
-      return await patchRes.json();
+      const updatedFile: DriveFileItem = await patchRes.json();
+      if (params.appProperties) {
+        const needsPropertyUpdate = Object.entries(params.appProperties).some(
+          ([k, v]) => updatedFile.appProperties?.[k] !== v
+        );
+        if (needsPropertyUpdate) {
+          void patchDriveFileAppProperties(updatedFile.id, params.appProperties);
+        }
+      }
+      return updatedFile;
     }
     // If 404 (file was deleted from Drive), fall through to create a new file inside the target folder
   }
@@ -387,9 +473,12 @@ export async function uploadFileToDrive(params: {
   if (targetFolderId) {
     metadata.parents = [targetFolderId];
   }
+  if (params.appProperties) {
+    metadata.appProperties = params.appProperties;
+  }
 
   const createRes = await fetch(
-    'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,modifiedTime,parents',
+    'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,parents,appProperties',
     {
       method: 'POST',
       headers: {
@@ -416,7 +505,7 @@ export async function uploadFileToDrive(params: {
   const mediaRes = await fetch(
     `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
       createdMeta.id
-    )}?uploadType=media&fields=id,name,mimeType,webViewLink,modifiedTime`,
+    )}?uploadType=media&fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,appProperties`,
     {
       method: 'PATCH',
       headers: {
@@ -481,32 +570,138 @@ export async function deleteDriveFile(fileId: string): Promise<void> {
 
 export const LIVE_DB_FILENAME = 'database_gestionale_asd.json';
 
-/**
- * Loads the live JSON database from the connected account's Google Drive
- * ("Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json").
- */
-export async function loadLiveDatabaseFromDrive(): Promise<{
+export interface LiveDatabaseLoadResult {
   fileId: string;
   content: string;
   modifiedTime?: string;
   webViewLink?: string;
-} | null> {
+  candidates?: DriveDbCandidate[];
+}
+
+/**
+ * Loads a specific database file by its explicit Google Drive fileId and tags it with appProperties.
+ */
+export async function loadLiveDatabaseFileById(
+  fileId: string,
+  associationId = 'asd-apuacamp'
+): Promise<LiveDatabaseLoadResult | null> {
   const token = await getAccessToken();
   if (!token) return null;
 
-  // 1. Check for the canonical live DB file first (without strict mimeType filter in case Drive indexed it as text/plain)
-  const liveFiles = await listDriveFiles(
-    `name = '${LIVE_DB_FILENAME}' and trashed = false`
-  );
-  for (const file of liveFiles) {
+  const content = await downloadDriveFileText(fileId);
+  if (!content || !content.trim().startsWith('{')) {
+    throw new Error('Il file selezionato su Google Drive non è un database JSON valido.');
+  }
+
+  void patchDriveFileAppProperties(fileId, {
+    gestionaleAsdDb: '1',
+    associationId,
+  });
+
+  return {
+    fileId,
+    content,
+  };
+}
+
+/**
+ * Loads the live JSON database from the connected account's Google Drive
+ * using narrowed search:
+ * 1. Inside known backup/root folder if provided.
+ * 2. Via appProperties { gestionaleAsdDb: '1' }.
+ * 3. Legacy fallback inside "Gestionale ASD" folders (and auto-tags found legacy file with appProperties).
+ * If multiple distinct candidate files exist on Drive, returns `candidates` so the user can choose.
+ */
+export async function loadLiveDatabaseFromDrive(options?: {
+  knownFolderId?: string;
+  knownRootFolderId?: string;
+  associationId?: string;
+}): Promise<LiveDatabaseLoadResult | null> {
+  const token = await getAccessToken();
+  if (!token) return null;
+
+  const assocId = options?.associationId || 'asd-apuacamp';
+  let matchedFiles: DriveFileItem[] = [];
+
+  // 1. Narrow search inside known folder if available
+  if (options?.knownFolderId) {
+    matchedFiles = await listDriveFiles(
+      `'${options.knownFolderId}' in parents and name = '${LIVE_DB_FILENAME}' and trashed = false`
+    );
+  }
+
+  // 2. Search via dedicated appProperties tag
+  if (matchedFiles.length === 0) {
+    matchedFiles = await listDriveFiles(
+      `appProperties has { key='gestionaleAsdDb' and value='1' } and trashed = false`
+    );
+  }
+
+  // 3. Legacy fallback: search inside "Gestionale ASD" folders first, then by exact filename
+  if (matchedFiles.length === 0) {
+    const rootFolders = await listDriveFiles(
+      `mimeType = 'application/vnd.google-apps.folder' and name = '${DRIVE_ROOT_FOLDER_NAME}' and trashed = false`
+    );
+    const folderIdsToSearch: string[] = [];
+    for (const rf of rootFolders) {
+      folderIdsToSearch.push(rf.id);
+      const subBackupFolders = await listDriveFiles(
+        `mimeType = 'application/vnd.google-apps.folder' and '${rf.id}' in parents and name = '${DRIVE_CATEGORY_FOLDERS.backup_sistema.folderName}' and trashed = false`
+      );
+      for (const sf of subBackupFolders) {
+        folderIdsToSearch.push(sf.id);
+      }
+    }
+
+    if (folderIdsToSearch.length > 0) {
+      const parentClauses = folderIdsToSearch.map((id) => `'${id}' in parents`).join(' or ');
+      matchedFiles = await listDriveFiles(
+        `(${parentClauses}) and name = '${LIVE_DB_FILENAME}' and trashed = false`
+      );
+    }
+
+    // Broad legacy fallback if the file was saved outside the standard folder tree
+    if (matchedFiles.length === 0) {
+      matchedFiles = await listDriveFiles(
+        `name = '${LIVE_DB_FILENAME}' and trashed = false`
+      );
+    }
+  }
+
+  // Deduplicate by file id
+  const uniqueFilesMap = new Map<string, DriveFileItem>();
+  for (const f of matchedFiles) {
+    if (!uniqueFilesMap.has(f.id)) {
+      uniqueFilesMap.set(f.id, f);
+    }
+  }
+  const uniqueFiles = Array.from(uniqueFilesMap.values());
+
+  const candidates: DriveDbCandidate[] = uniqueFiles.map((f) => ({
+    id: f.id,
+    name: f.name,
+    modifiedTime: f.modifiedTime,
+    webViewLink: f.webViewLink,
+    parents: f.parents,
+  }));
+
+  for (const file of uniqueFiles) {
     try {
       const content = await downloadDriveFileText(file.id);
       if (content && content.trim().startsWith('{')) {
+        // Auto-tag legacy file with appProperties if missing
+        if (file.appProperties?.gestionaleAsdDb !== '1') {
+          void patchDriveFileAppProperties(file.id, {
+            gestionaleAsdDb: '1',
+            associationId: assocId,
+          });
+        }
         return {
           fileId: file.id,
           content,
           modifiedTime: file.modifiedTime,
           webViewLink: file.webViewLink,
+          candidates: candidates.length > 1 ? candidates : undefined,
         };
       }
     } catch {
@@ -514,7 +709,7 @@ export async function loadLiveDatabaseFromDrive(): Promise<{
     }
   }
 
-  // 2. Fallback to any previous Backup_Apuacamp*.json or Database_*.json on Drive
+  // 4. Legacy fallback to any previous Backup_Apuacamp*.json or Database_ASD*.json inside Gestionale ASD
   const fallbackFiles = await listDriveFiles(
     "(name contains 'Backup_Apuacamp' or name contains 'Database_ASD') and trashed = false"
   );
@@ -539,23 +734,33 @@ export async function loadLiveDatabaseFromDrive(): Promise<{
 
 /**
  * Saves/updates the live JSON database in real time inside
- * "Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json" on the user's Google Drive.
+ * "Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json" on the user's Google Drive,
+ * tagging it with `appProperties: { gestionaleAsdDb: '1', associationId }`.
  */
 export async function saveLiveDatabaseToDrive(
   jsonContent: string,
-  knownFileId?: string
+  knownFileId?: string,
+  options?: { associationId?: string }
 ): Promise<DriveFileItem> {
   const token = await getAccessToken();
   if (!token) throw new Error('AUTH_REQUIRED');
 
+  const assocId = options?.associationId || 'asd-apuacamp';
   let targetFileId = knownFileId;
 
   if (!targetFileId) {
-    const existing = await listDriveFiles(
-      `name = '${LIVE_DB_FILENAME}' and trashed = false`
+    const byProp = await listDriveFiles(
+      `appProperties has { key='gestionaleAsdDb' and value='1' } and trashed = false`
     );
-    if (existing.length > 0) {
-      targetFileId = existing[0].id;
+    if (byProp.length > 0) {
+      targetFileId = byProp[0].id;
+    } else {
+      const byName = await listDriveFiles(
+        `name = '${LIVE_DB_FILENAME}' and trashed = false`
+      );
+      if (byName.length > 0) {
+        targetFileId = byName[0].id;
+      }
     }
   }
 
@@ -565,7 +770,187 @@ export async function saveLiveDatabaseToDrive(
     mimeType: 'application/json',
     category: 'backup_sistema',
     existingFileId: targetFileId || undefined,
+    appProperties: {
+      gestionaleAsdDb: '1',
+      associationId: assocId,
+    },
   });
+}
+
+// ============================================================================
+// VERSIONED AUTOMATIC BACKUPS ON GOOGLE DRIVE (Phase 1.6)
+// ============================================================================
+
+export const DRIVE_AUTO_BACKUPS_SUBFOLDER_NAME = 'Backup_Automatici';
+
+async function getOrCreateAutoBackupsFolder(): Promise<DriveFileItem> {
+  const { categoryFolder } = await getOrCreateDriveCategoryFolder('backup_sistema');
+  return await findOrCreateDriveFolder(DRIVE_AUTO_BACKUPS_SUBFOLDER_NAME, categoryFolder.id);
+}
+
+/**
+ * Creates a timestamped, immutable backup file `backup_<reason>_<timestamp>.json` on Google Drive
+ * inside "Gestionale ASD / 07_Backup_Sistema / Backup_Automatici".
+ * If reason === 'daily', automatically prunes older daily backups keeping the latest 30.
+ */
+export async function createDriveBackupSnapshot(
+  state: AppState,
+  reason: DriveBackupReason
+): Promise<DriveBackupEntry> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('AUTH_REQUIRED');
+
+  const backupsFolder = await getOrCreateAutoBackupsFolder();
+  const safeTimestamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .replace('Z', 'Z');
+  const fileName = `backup_${reason}_${safeTimestamp}.json`;
+  const assocId = deriveAssociationId(state.profile);
+  const versionStr = String(state.version || 1);
+
+  const created = await uploadFileToDrive({
+    name: fileName,
+    content: JSON.stringify(state, null, 2),
+    mimeType: 'application/json',
+    folderId: backupsFolder.id,
+    appProperties: {
+      gestionaleAsdBackup: '1',
+      backupReason: reason,
+      associationId: assocId,
+      version: versionStr,
+    },
+  });
+
+  if (reason === 'daily') {
+    void pruneOldDailyBackups(backupsFolder.id, 30);
+  }
+
+  return {
+    id: created.id,
+    name: created.name,
+    createdTime: created.createdTime || created.modifiedTime,
+    modifiedTime: created.modifiedTime,
+    size: created.size,
+    webViewLink: created.webViewLink,
+    reason,
+    version: state.version || 1,
+  };
+}
+
+/**
+ * Retains the most recent `keepCount` (default 30) daily backups and deletes older daily ones.
+ */
+export async function pruneOldDailyBackups(
+  backupsFolderId?: string,
+  keepCount = 30
+): Promise<void> {
+  try {
+    const folderId = backupsFolderId || (await getOrCreateAutoBackupsFolder()).id;
+    const dailyFiles = await listDriveFiles(
+      `'${folderId}' in parents and appProperties has { key='backupReason' and value='daily' } and trashed = false`
+    );
+    if (dailyFiles.length <= keepCount) return;
+
+    const toDelete = dailyFiles.slice(keepCount);
+    for (const oldFile of toDelete) {
+      await deleteDriveFile(oldFile.id).catch(() => {});
+    }
+  } catch (err) {
+    console.warn('Impossibile ripulire i vecchi backup giornalieri su Drive:', err);
+  }
+}
+
+/**
+ * Lists all versioned automatic backups stored on Google Drive, sorted newest first.
+ */
+export async function listDriveBackups(): Promise<DriveBackupEntry[]> {
+  const token = await getAccessToken();
+  if (!token) return [];
+
+  const files = await listDriveFiles(
+    `appProperties has { key='gestionaleAsdBackup' and value='1' } and trashed = false`
+  );
+
+  return files.map((f) => {
+    const rawReason = f.appProperties?.backupReason as DriveBackupReason | undefined;
+    const rawVersion = Number(f.appProperties?.version || '1');
+    return {
+      id: f.id,
+      name: f.name,
+      createdTime: f.createdTime || f.modifiedTime,
+      modifiedTime: f.modifiedTime,
+      size: f.size,
+      webViewLink: f.webViewLink,
+      reason: rawReason,
+      version: Number.isFinite(rawVersion) ? rawVersion : 1,
+    };
+  });
+}
+
+/**
+ * Downloads and hydrates a specific backup file from Google Drive by fileId.
+ */
+export async function loadDriveBackupById(fileId: string): Promise<AppState> {
+  const text = await downloadDriveFileText(fileId);
+  const parsed = JSON.parse(text);
+  return hydrateAppState(parsed);
+}
+
+// ============================================================================
+// HYBRID ARCHIVED FISCAL YEARS ON GOOGLE DRIVE (Phase 6.2)
+// ============================================================================
+
+/**
+ * Saves an ArchivedFiscalYear as a dedicated file `archivio_<year>.json` inside
+ * "Gestionale ASD / 06_Archivio_Annualita_Storiche" and returns `{ fileId, webViewLink }`.
+ */
+export async function saveArchivedYearFileToDrive(
+  archivedYear: any,
+  associationName?: string
+): Promise<{ fileId: string; webViewLink?: string }> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('AUTH_REQUIRED');
+
+  const safeAssoc = (associationName || 'ASD')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const fileName = `archivio_${archivedYear.year}_${safeAssoc || 'ASD'}.json`;
+
+  let existingFileId: string | undefined = archivedYear.driveFileId;
+  if (!existingFileId) {
+    const existingList = await listDriveFiles(
+      `appProperties has { key='gestionaleAsdArchiveYear' and value='${archivedYear.year}' } and trashed = false`
+    );
+    if (existingList.length > 0) {
+      existingFileId = existingList[0].id;
+    }
+  }
+
+  const uploaded = await uploadFileToDrive({
+    name: fileName,
+    content: JSON.stringify(archivedYear, null, 2),
+    mimeType: 'application/json',
+    category: 'archivio_annualita',
+    existingFileId,
+    appProperties: {
+      gestionaleAsdArchiveYear: String(archivedYear.year),
+    },
+  });
+
+  return {
+    fileId: uploaded.id,
+    webViewLink: uploaded.webViewLink,
+  };
+}
+
+/**
+ * Loads the full ArchivedFiscalYear snapshot from its separate Google Drive file (`driveFileId`).
+ */
+export async function loadArchivedYearFileFromDrive(fileId: string): Promise<any> {
+  const text = await downloadDriveFileText(fileId);
+  return JSON.parse(text);
 }
 
 // ============================================================================
@@ -579,6 +964,35 @@ export interface SpreadsheetMeta {
   sheets: string[];
 }
 
+class SpreadsheetApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'SpreadsheetApiError';
+    this.status = status;
+  }
+}
+
+function escapeSheetTitleForRange(sheetTitle: string): string {
+  return `'${String(sheetTitle || 'Sheet1').replace(/'/g, "''")}'`;
+}
+
+async function getDriveFileMetadata(
+  fileId: string
+): Promise<{ id: string; trashed?: boolean } | null> {
+  const token = await getAccessToken();
+  if (!token) return null;
+  const safeId = encodeURIComponent(fileId.trim());
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${safeId}?fields=id,trashed`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (!res.ok) return null;
+  return await res.json();
+}
+
 export async function getSpreadsheetMetadata(spreadsheetId: string): Promise<SpreadsheetMeta> {
   const token = await getAccessToken();
   if (!token) throw new Error('AUTH_REQUIRED');
@@ -589,7 +1003,10 @@ export async function getSpreadsheetMetadata(spreadsheetId: string): Promise<Spr
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || 'Impossibile leggere il foglio Google Sheets');
+    throw new SpreadsheetApiError(
+      err?.error?.message || 'Impossibile leggere il foglio Google Sheets',
+      res.status
+    );
   }
   const data = await res.json();
   return {
@@ -609,7 +1026,7 @@ export async function readSpreadsheetSheet(
   if (!token) throw new Error('AUTH_REQUIRED');
 
   const safeId = encodeURIComponent(spreadsheetId.trim());
-  const safeRange = encodeURIComponent(`${sheetName}!A1:Z1000`);
+  const safeRange = encodeURIComponent(escapeSheetTitleForRange(sheetName));
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values/${safeRange}`,
     {
@@ -663,9 +1080,9 @@ export async function createAndPopulateSpreadsheet(
   }
 
   const dataPayload = tabs.map((t) => ({
-    range: `'${t.sheetTitle}'!A1`,
+    range: `${escapeSheetTitleForRange(t.sheetTitle)}!A1`,
     majorDimension: 'ROWS',
-    values: t.rows,
+    values: sanitizeSpreadsheetRows(t.rows),
   }));
 
   const updateRes = await fetch(
@@ -679,7 +1096,7 @@ export async function createAndPopulateSpreadsheet(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        valueInputOption: 'USER_ENTERED',
+        valueInputOption: 'RAW',
         data: dataPayload,
       }),
     }
@@ -710,10 +1127,10 @@ export async function updateMembersGoogleSheet(
   const meta = await getSpreadsheetMetadata(spreadsheetId);
   const firstSheet = meta.sheets[0] || 'Anagrafica_Soci';
   const safeId = encodeURIComponent(spreadsheetId.trim());
-  const safeRange = encodeURIComponent(`'${firstSheet}'!A1:Z2000`);
+  const wholeSheetRange = encodeURIComponent(escapeSheetTitleForRange(firstSheet));
 
   await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values/${safeRange}:clear`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values/${wholeSheetRange}:clear`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
@@ -722,8 +1139,8 @@ export async function updateMembersGoogleSheet(
 
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values/${encodeURIComponent(
-      `'${firstSheet}'!A1`
-    )}?valueInputOption=USER_ENTERED`,
+      `${escapeSheetTitleForRange(firstSheet)}!A1`
+    )}?valueInputOption=RAW`,
     {
       method: 'PUT',
       headers: {
@@ -732,7 +1149,7 @@ export async function updateMembersGoogleSheet(
       },
       body: JSON.stringify({
         majorDimension: 'ROWS',
-        values: rows,
+        values: sanitizeSpreadsheetRows(rows),
       }),
     }
   );
@@ -746,7 +1163,9 @@ export async function updateMembersGoogleSheet(
 }
 
 /**
- * Creates or updates the official Accounting Google Sheet inside "Gestionale ASD / 02_Contabilita_e_Cassa"
+ * Creates or updates the official Accounting Google Sheet inside "Gestionale ASD / 02_Contabilita_e_Cassa".
+ * Only creates a new spreadsheet if `existingSpreadsheetId` is missing, returns 404, or is in the Drive trash.
+ * Automatically adds any missing tabs via `addSheet`.
  */
 export async function syncAccountingGoogleSheet(params: {
   existingSpreadsheetId?: string;
@@ -757,35 +1176,36 @@ export async function syncAccountingGoogleSheet(params: {
   if (!token) throw new Error('AUTH_REQUIRED');
 
   if (params.existingSpreadsheetId) {
-    try {
-      const meta = await getSpreadsheetMetadata(params.existingSpreadsheetId);
-      const safeId = encodeURIComponent(params.existingSpreadsheetId.trim());
+    let shouldCreateNew = false;
+    let meta: SpreadsheetMeta | null = null;
 
-      // Ensure all requested sheet tabs exist; if they do, clear and batchUpdate
-      for (const tab of params.tabs) {
-        if (meta.sheets.includes(tab.sheetTitle)) {
-          const safeRange = encodeURIComponent(`'${tab.sheetTitle}'!A1:Z2000`);
-          await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values/${safeRange}:clear`,
-            {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${token}` },
-            }
-          );
+    // 1. Check if file exists on Drive and whether it is in trash
+    const driveMeta = await getDriveFileMetadata(params.existingSpreadsheetId).catch(() => null);
+    if (driveMeta && driveMeta.trashed) {
+      shouldCreateNew = true;
+    }
+
+    if (!shouldCreateNew) {
+      try {
+        meta = await getSpreadsheetMetadata(params.existingSpreadsheetId);
+      } catch (err: any) {
+        if (err instanceof SpreadsheetApiError && err.status === 404) {
+          shouldCreateNew = true;
+        } else {
+          // Do NOT create duplicate spreadsheets on transient network/401/403/5xx errors
+          throw err;
         }
       }
+    }
 
-      const dataPayload = params.tabs
-        .filter((t) => meta.sheets.includes(t.sheetTitle))
-        .map((t) => ({
-          range: `'${t.sheetTitle}'!A1`,
-          majorDimension: 'ROWS',
-          values: t.rows,
-        }));
+    if (!shouldCreateNew && meta) {
+      const safeId = encodeURIComponent(params.existingSpreadsheetId.trim());
 
-      if (dataPayload.length > 0) {
-        const updateRes = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values:batchUpdate`,
+      // 2. If any requested sheet tabs are missing, create them via addSheet batchUpdate
+      const missingTabs = params.tabs.filter((t) => !meta!.sheets.includes(t.sheetTitle));
+      if (missingTabs.length > 0) {
+        const addSheetsRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${safeId}:batchUpdate`,
           {
             method: 'POST',
             headers: {
@@ -793,27 +1213,70 @@ export async function syncAccountingGoogleSheet(params: {
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              valueInputOption: 'USER_ENTERED',
-              data: dataPayload,
+              requests: missingTabs.map((t) => ({
+                addSheet: {
+                  properties: {
+                    title: t.sheetTitle,
+                  },
+                },
+              })),
             }),
           }
         );
-        if (updateRes.ok) {
-          return {
-            spreadsheetId: meta.spreadsheetId,
-            spreadsheetUrl: meta.spreadsheetUrl,
-          };
+        if (!addSheetsRes.ok) {
+          const err = await addSheetsRes.json().catch(() => ({}));
+          throw new Error(
+            err?.error?.message ||
+              'Errore nella creazione delle schede mancanti nel Foglio Google Contabilità'
+          );
         }
-      } else {
-        // Fallback: write to first sheet
-        await updateMembersGoogleSheet(params.existingSpreadsheetId, params.tabs[0].rows);
-        return {
-          spreadsheetId: meta.spreadsheetId,
-          spreadsheetUrl: meta.spreadsheetUrl,
-        };
       }
-    } catch {
-      // If existing sheet was deleted on Drive, create a fresh one below
+
+      // 3. Clear each sheet tab completely using whole-sheet range
+      for (const tab of params.tabs) {
+        const wholeSheetRange = encodeURIComponent(escapeSheetTitleForRange(tab.sheetTitle));
+        await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values/${wholeSheetRange}:clear`,
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+      }
+
+      // 4. Write all tabs with valueInputOption: 'RAW'
+      const dataPayload = params.tabs.map((t) => ({
+        range: `${escapeSheetTitleForRange(t.sheetTitle)}!A1`,
+        majorDimension: 'ROWS',
+        values: sanitizeSpreadsheetRows(t.rows),
+      }));
+
+      const updateRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${safeId}/values:batchUpdate`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            valueInputOption: 'RAW',
+            data: dataPayload,
+          }),
+        }
+      );
+
+      if (!updateRes.ok) {
+        const err = await updateRes.json().catch(() => ({}));
+        throw new Error(
+          err?.error?.message || "Errore nell'aggiornamento del Foglio Google Contabilità"
+        );
+      }
+
+      return {
+        spreadsheetId: meta.spreadsheetId,
+        spreadsheetUrl: meta.spreadsheetUrl,
+      };
     }
   }
 
@@ -906,7 +1369,6 @@ export async function createGoogleFormForActivity(params: {
   };
 }
 
-
 export async function fetchGoogleFormResponses(formId: string): Promise<{
   formTitle: string;
   questionsMap: Record<string, string>;
@@ -917,26 +1379,41 @@ export async function fetchGoogleFormResponses(formId: string): Promise<{
 
   const safeFormId = encodeURIComponent(formId.trim());
 
-  const [formRes, respRes] = await Promise.all([
-    fetch(`https://forms.googleapis.com/v1/forms/${safeFormId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    }),
-    fetch(`https://forms.googleapis.com/v1/forms/${safeFormId}/responses`, {
-      headers: { Authorization: `Bearer ${token}` },
-    }),
-  ]);
+  const formRes = await fetch(`https://forms.googleapis.com/v1/forms/${safeFormId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 
   if (!formRes.ok) {
     const err = await formRes.json().catch(() => ({}));
     throw new Error(err?.error?.message || 'Impossibile leggere la struttura del Google Form');
   }
-  if (!respRes.ok) {
-    const err = await respRes.json().catch(() => ({}));
-    throw new Error(err?.error?.message || 'Impossibile leggere le risposte del Google Form');
-  }
 
   const formData = await formRes.json();
-  const respData = await respRes.json();
+
+  // Paginate through all pages of responses using nextPageToken
+  const allRawResponses: any[] = [];
+  let pageToken: string | undefined = undefined;
+  for (let page = 0; page < 50; page++) {
+    const url = new URL(`https://forms.googleapis.com/v1/forms/${safeFormId}/responses`);
+    if (pageToken) {
+      url.searchParams.set('pageToken', pageToken);
+    }
+    const respRes = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!respRes.ok) {
+      const err = await respRes.json().catch(() => ({}));
+      throw new Error(err?.error?.message || 'Impossibile leggere le risposte del Google Form');
+    }
+    const respData = await respRes.json();
+    if (Array.isArray(respData.responses)) {
+      allRawResponses.push(...respData.responses);
+    }
+    if (!respData.nextPageToken) {
+      break;
+    }
+    pageToken = respData.nextPageToken;
+  }
 
   const qMap: Record<string, string> = {};
   for (const item of formData.items || []) {
@@ -947,7 +1424,7 @@ export async function fetchGoogleFormResponses(formId: string): Promise<{
   }
 
   const parsedResponses: Record<string, string>[] = [];
-  for (const r of respData.responses || []) {
+  for (const r of allRawResponses) {
     const row: Record<string, string> = {
       _responseId: r.responseId,
       _submittedAt: r.lastSubmittedTime || r.createTime || '',
@@ -1022,26 +1499,32 @@ export async function sendGmailMessageWithAttachment(params: {
     throw new Error('AUTH_REQUIRED');
   }
 
-  const recipient = params.to.trim();
-  if (!recipient || !recipient.includes('@')) {
+  const recipient = sanitizeEmailHeader(params.to);
+  if (!isValidEmailAddress(recipient)) {
     throw new Error('Indirizzo email destinatario non valido.');
   }
+
+  const cleanSubject =
+    sanitizeEmailHeader(params.subject) || 'Comunicazione Segreteria ASD';
 
   const boundary = `===_Apuacamp_ASD_Mime_${Date.now().toString(36)}_===`;
   const headers: string[] = [
     `To: ${recipient}`,
-    `Subject: ${encodeMimeSubjectUtf8(params.subject.trim() || 'Comunicazione Segreteria ASD')}`,
+    `Subject: ${encodeMimeSubjectUtf8(cleanSubject)}`,
     'MIME-Version: 1.0',
   ];
 
-  if (params.replyTo && params.replyTo.includes('@')) {
-    headers.push(`Reply-To: ${params.replyTo.trim()}`);
+  if (params.replyTo) {
+    const cleanReplyTo = sanitizeEmailHeader(params.replyTo);
+    if (isValidEmailAddress(cleanReplyTo)) {
+      headers.push(`Reply-To: ${cleanReplyTo}`);
+    }
   }
 
   let rawMimeMessage = '';
 
   if (params.attachmentPdfBlob && params.attachmentFileName) {
-    const safeFileName = params.attachmentFileName.replace(/["\r\n]/g, '_');
+    const encodedAttachment = encodeMimeAttachmentFilename(params.attachmentFileName);
     const pdfBase64 = wrapBase64Lines(await blobToBase64(params.attachmentPdfBlob));
     const bodyBase64 = wrapBase64Lines(encodeUtf8ToBase64(params.bodyText));
 
@@ -1057,9 +1540,9 @@ export async function sendGmailMessageWithAttachment(params: {
       bodyBase64,
       '',
       `--${boundary}`,
-      `Content-Type: application/pdf; name="${safeFileName}"`,
+      `Content-Type: application/pdf; ${encodedAttachment.mimeNameParam}`,
       'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; filename="${safeFileName}"`,
+      `Content-Disposition: attachment; ${encodedAttachment.dispositionFilenameParam}`,
       '',
       pdfBase64,
       '',

@@ -13,9 +13,12 @@ import {
   PreEventParticipantAlert,
   CustomCriticalDeadline,
   DuplicateDetectionMode,
+  StaffMember,
+  StaffThresholdsConfig,
 } from '../types';
 import { detectDuplicateTransactions } from './duplicates';
 import { formatEuro } from './finance';
+import { calculateStaffAnnualSummary } from './staff';
 
 /**
  * Parses Italian "DD/MM/YYYY" or ISO "YYYY-MM-DD" into a Date object (at midnight local)
@@ -206,16 +209,20 @@ export function generateSystemNotifications(
   notificationResolutions?: Record<string, NotificationResolutionRecord>,
   customDeadlines: CustomCriticalDeadline[] = [],
   completedDeadlineIds: string[] = [],
-  duplicateDetectionMode: DuplicateDetectionMode = 'strict'
+  duplicateDetectionMode: DuplicateDetectionMode = 'strict',
+  staff: StaffMember[] = [],
+  activeYear?: number,
+  staffThresholds?: Partial<StaffThresholdsConfig>
 ): NotificationItem[] {
   const notifications: NotificationItem[] = [];
   const completedSet = new Set(completedDeadlineIds);
+  const currentYear = activeYear || referenceDate.getFullYear();
 
   // 0. DUPLICATE MOVEMENTS ALERT (Same person, same amount, within 7 days max)
   const duplicateGroups = detectDuplicateTransactions(
     transactions,
     members,
-    [],
+    staff,
     7,
     ignoredDuplicateSignatures,
     duplicateDetectionMode
@@ -584,6 +591,48 @@ export function generateSystemNotifications(
         .join(', ')}${missingForms.length > 6 ? '...' : ''}.`,
       date: 'Archivio CONI',
     });
+  }
+
+  // 8. SOGLIE COLLABORATORI SPORTIVI (D.Lgs. 36/2021 - 5.000 € INPS / 15.000 € IRPEF)
+  for (const s of staff) {
+    const summary = calculateStaffAnnualSummary(s, transactions, currentYear, staffThresholds);
+    if (summary.thresholdStatus === 'exceeded_irpef') {
+      notifications.push({
+        id: `notif-staff-irpef-${s.id}-${currentYear}`,
+        type: 'urgent',
+        category: 'staff_soglie',
+        title: `[Soglia IRPEF ${formatEuro(summary.irpefExemptionLimit)} Superata] ${s.name}: ${formatEuro(summary.cumulativeAnnualCompensation)}`,
+        description: `Compensi sportivi cumulativi ${currentYear}: ${formatEuro(summary.asdCompensation)} erogati dalla nostra ASD + ${formatEuro(summary.otherAssociationsCompensation)} presso altri enti = ${formatEuro(summary.cumulativeAnnualCompensation)} (eccedenza IRPEF: ${formatEuro(summary.irpefExcessAmount)}; eccedenza contributiva INPS: ${formatEuro(summary.inpsExcessAmount)}).`,
+        date: `Anno ${currentYear}`,
+        targetId: s.id,
+        targetType: 'staff',
+        actionLabel: 'Apri Collaboratori & Staff',
+      });
+    } else if (summary.thresholdStatus === 'exceeded_inps') {
+      notifications.push({
+        id: `notif-staff-inps-${s.id}-${currentYear}`,
+        type: 'urgent',
+        category: 'staff_soglie',
+        title: `[Soglia Contributiva INPS ${formatEuro(summary.inpsExemptionLimit)} Superata] ${s.name}: ${formatEuro(summary.cumulativeAnnualCompensation)}`,
+        description: `Compensi sportivi cumulativi ${currentYear}: ${formatEuro(summary.asdCompensation)} erogati dalla nostra ASD + ${formatEuro(summary.otherAssociationsCompensation)} presso altri enti = ${formatEuro(summary.cumulativeAnnualCompensation)} (eccedenza soggetta a contributi INPS Gestione Separata: ${formatEuro(summary.inpsExcessAmount)}).`,
+        date: `Anno ${currentYear}`,
+        targetId: s.id,
+        targetType: 'staff',
+        actionLabel: 'Apri Collaboratori & Staff',
+      });
+    } else if (summary.thresholdStatus === 'warning_inps') {
+      notifications.push({
+        id: `notif-staff-warn-${s.id}-${currentYear}`,
+        type: 'warning',
+        category: 'staff_soglie',
+        title: `[Avviso Soglia INPS 80%] ${s.name}: ${formatEuro(summary.cumulativeAnnualCompensation)} / ${formatEuro(summary.inpsExemptionLimit)}`,
+        description: `Il collaboratore ha raggiunto il ${summary.inpsProgressPercent}% della soglia contributiva INPS (${formatEuro(summary.asdCompensation)} nostra ASD + ${formatEuro(summary.otherAssociationsCompensation)} altri enti). Verificare l'autocertificazione prima dei prossimi pagamenti.`,
+        date: `Anno ${currentYear}`,
+        targetId: s.id,
+        targetType: 'staff',
+        actionLabel: 'Apri Collaboratori & Staff',
+      });
+    }
   }
 
   if (notificationResolutions && Object.keys(notificationResolutions).length > 0) {

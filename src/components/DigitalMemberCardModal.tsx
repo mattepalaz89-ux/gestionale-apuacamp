@@ -225,7 +225,7 @@ export const DigitalMemberCardModal: React.FC<DigitalMemberCardModalProps> = ({
       const nextCfg: DigitalCardTemplateConfig = {
         ...cardConfig,
         backgroundDataUrl: processed.previewDataUrl,
-        backgroundRawPdfDataUrl: processed.rawPdfDataUrl,
+        backgroundRawPdfDataUrl: undefined,
         backgroundFileName: processed.fileName,
       };
       setCardConfig(nextCfg);

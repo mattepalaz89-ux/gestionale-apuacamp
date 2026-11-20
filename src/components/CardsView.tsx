@@ -41,6 +41,7 @@ import {
   SortDirection,
   sortMembersList,
 } from '../utils/finance';
+import { newId } from '../utils/ids';
 
 interface CardsViewProps {
   members: Member[];
@@ -246,7 +247,7 @@ export const CardsView: React.FC<CardsViewProps> = ({
       archivePreviousCard && editingCardMember.membershipCardNumber
         ? [
             {
-              id: `ch-${Date.now()}`,
+              id: newId('ch'),
               cardNumber: editingCardMember.membershipCardNumber,
               issueDate: editingCardMember.cardIssueDate || 'Storico',
               expiryDate: editingCardMember.expiryDate || '-',
@@ -277,6 +278,8 @@ export const CardsView: React.FC<CardsViewProps> = ({
         income: cashAmount,
         expense: null,
         method: cashMethod,
+        memberId: updatedMember.id,
+        relatedMemberName: updatedMember.childName,
         description: `Quota Tessera ${getInsuranceDisplayLabel(insuranceType, profile)} (${
           effectiveValidity === 'tessera_365' ? 'Tessera 365' : 'Solare'
         }) - ${updatedMember.childName}`,
@@ -331,6 +334,8 @@ export const CardsView: React.FC<CardsViewProps> = ({
         income: newCashAmount,
         expense: null,
         method: newCashMethod,
+        memberId: created.id,
+        relatedMemberName: created.childName,
         description: `Nuova Tessera ${getInsuranceDisplayLabel(newInsType, profile)} - ${created.childName}`,
       });
     }

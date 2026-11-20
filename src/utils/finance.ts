@@ -6,7 +6,86 @@ import {
   Member,
   EventDiscountType,
   ReceiptLineItem,
+  PaymentMethod,
+  BuiltInPaymentAccountId,
+  PaymentAccountId,
+  PaymentAccountsMap,
+  CustomPaymentAccount,
 } from '../types';
+
+export const DEFAULT_PAYMENT_ACCOUNTS: Record<PaymentMethod, BuiltInPaymentAccountId> = {
+  Bonifico: 'banca',
+  POS: 'banca',
+  Bancomat: 'banca',
+  'Pagam Online': 'banca',
+  Paypal: 'paypal',
+  Contanti: 'cassa',
+};
+
+export interface CalculateCashTotalsOptions {
+  initialPaypal?: number;
+  paymentAccounts?: PaymentAccountsMap;
+  paypalExpenseSourceAccount?: PaymentAccountId;
+  customPaymentAccounts?: CustomPaymentAccount[];
+}
+
+export interface CustomAccountBalanceSummary {
+  id: string;
+  name: string;
+  initialBalance: number;
+  income: number;
+  expense: number;
+  currentBalance: number;
+}
+
+/**
+ * Determina in modo robusto a quale conto appartiene un movimento (`'banca'`, `'paypal'`, `'cassa'` o ID conto personalizzato):
+ * 1. Se `tx.accountId` è esplicitato sul movimento (es. scelta dello strumento usato dentro PayPal per un'uscita), usa `tx.accountId`.
+ * 2. Altrimenti confronta `tx.method.trim().toLowerCase()` usando la mappa configurabile `paymentAccounts`
+ *    (di default: Contanti -> 'cassa', Paypal -> 'paypal', Bonifico/POS/Bancomat/Pagam Online -> 'banca').
+ */
+export function resolveTransactionAccountId(
+  tx: CashTransaction,
+  options?: CalculateCashTotalsOptions
+): PaymentAccountId {
+  if (tx.accountId && tx.accountId.trim()) {
+    return tx.accountId.trim();
+  }
+
+  const rawMethod = (tx.method || '').trim();
+  const lowerMethod = rawMethod.toLowerCase();
+  const map = options?.paymentAccounts;
+
+  if (map) {
+    for (const [k, targetAcc] of Object.entries(map)) {
+      if (targetAcc && k.trim().toLowerCase() === lowerMethod) {
+        if (
+          lowerMethod === 'paypal' &&
+          (tx.expense || 0) > 0 &&
+          !(tx.income && tx.income > 0) &&
+          options?.paypalExpenseSourceAccount
+        ) {
+          return options.paypalExpenseSourceAccount;
+        }
+        return targetAcc;
+      }
+    }
+  }
+
+  if (lowerMethod === 'contanti' || lowerMethod === 'cassa' || lowerMethod === 'cash') {
+    return 'cassa';
+  }
+
+  if (lowerMethod === 'paypal') {
+    const isExpense = (tx.expense || 0) > 0 && !(tx.income && tx.income > 0);
+    if (isExpense && options?.paypalExpenseSourceAccount) {
+      return options.paypalExpenseSourceAccount;
+    }
+    return 'paypal';
+  }
+
+  return 'banca';
+}
 
 export interface MonthlyCashFlow {
   monthKey: string; // e.g. "2026-01"
@@ -105,14 +184,35 @@ export function calculateCashTotals(
   transactions: CashTransaction[],
   initialFund: number = 0,
   initialBank: number = 0,
-  initialCash: number = 0
+  initialCash: number = 0,
+  options?: CalculateCashTotalsOptions
 ) {
+  const initialPaypal = options?.initialPaypal || 0;
+  const customAccounts = options?.customPaymentAccounts || [];
+  const customAccMap = new Map<string, CustomAccountBalanceSummary>();
+
+  let customInitialTotal = 0;
+  for (const ca of customAccounts) {
+    const initBal = round2(Number(ca.initialBalance) || 0);
+    customInitialTotal += initBal;
+    customAccMap.set(ca.id, {
+      id: ca.id,
+      name: ca.name,
+      initialBalance: initBal,
+      income: 0,
+      expense: 0,
+      currentBalance: initBal,
+    });
+  }
+
   let totalIncome = 0;
   let totalExpense = 0;
   let bankIncome = 0;
   let bankExpense = 0;
   let cashIncome = 0;
   let cashExpense = 0;
+  let paypalIncome = 0;
+  let paypalExpense = 0;
 
   for (const t of transactions) {
     const inc = t.income || 0;
@@ -120,11 +220,24 @@ export function calculateCashTotals(
     totalIncome += inc;
     totalExpense += exp;
 
-    if (t.method === 'Contanti') {
+    const accountId = resolveTransactionAccountId(t, options);
+
+    if (accountId === 'cassa') {
       cashIncome += inc;
       cashExpense += exp;
+    } else if (accountId === 'paypal') {
+      paypalIncome += inc;
+      paypalExpense += exp;
+    } else if (accountId === 'banca') {
+      bankIncome += inc;
+      bankExpense += exp;
+    } else if (customAccMap.has(accountId)) {
+      const entry = customAccMap.get(accountId)!;
+      entry.income = round2(entry.income + inc);
+      entry.expense = round2(entry.expense + exp);
+      entry.currentBalance = round2(entry.initialBalance + entry.income - entry.expense);
     } else {
-      // Bonifico, POS, Bancomat, Paypal, Pagam Online are electronic/bank
+      // Fallback to bank if a custom account was deleted
       bankIncome += inc;
       bankExpense += exp;
     }
@@ -132,21 +245,50 @@ export function calculateCashTotals(
 
   totalIncome = round2(totalIncome);
   totalExpense = round2(totalExpense);
+  bankIncome = round2(bankIncome);
+  bankExpense = round2(bankExpense);
+  cashIncome = round2(cashIncome);
+  cashExpense = round2(cashExpense);
+  paypalIncome = round2(paypalIncome);
+  paypalExpense = round2(paypalExpense);
+
+  const hasComponentFunds =
+    initialBank !== 0 ||
+    initialCash !== 0 ||
+    initialPaypal !== 0 ||
+    customInitialTotal !== 0;
+
+  // Fase 4.4: initialFund è sempre la somma dei saldi iniziali (banca + cassa + paypal + eventuali conti extra)
+  const effectiveInitialFund = hasComponentFunds
+    ? round2(initialBank + initialCash + initialPaypal + customInitialTotal)
+    : round2(initialFund);
+
   const netBalance = round2(totalIncome - totalExpense);
-  const currentTotal = round2(initialFund + netBalance);
   const currentBank = round2(initialBank + (bankIncome - bankExpense));
   const currentCash = round2(initialCash + (cashIncome - cashExpense));
+  const currentPaypal = round2(initialPaypal + (paypalIncome - paypalExpense));
+  const customAccountBalances = Array.from(customAccMap.values());
+  const currentTotal = round2(effectiveInitialFund + netBalance);
 
   return {
-    initialFund: round2(initialFund),
+    initialFund: effectiveInitialFund,
     initialBank: round2(initialBank),
     initialCash: round2(initialCash),
+    initialPaypal: round2(initialPaypal),
     totalIncome,
     totalExpense,
     netBalance,
+    bankIncome,
+    bankExpense,
+    cashIncome,
+    cashExpense,
+    paypalIncome,
+    paypalExpense,
     currentTotal,
     currentBank,
     currentCash,
+    currentPaypal,
+    customAccountBalances,
   };
 }
 

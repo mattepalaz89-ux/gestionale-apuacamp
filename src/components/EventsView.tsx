@@ -66,19 +66,22 @@ import {
 import { GoogleFormBuilderModal } from './GoogleFormBuilderModal';
 import { TransactionDateSelector } from './TransactionDateSelector';
 import { getInsuranceDisplayLabel } from '../utils/digitalCard';
+import { todayIso as getTodayIso } from '../utils/dates';
+import { matchMemberForRegistration } from '../utils/staff';
 
 interface EventsViewProps {
   events: EventItem[];
   bookings: EventBooking[];
   members: Member[];
+  transactions?: CashTransaction[];
   profile?: AssociationProfile;
   googleUserEmail: string | null;
   onAddEvent: (ev: Omit<EventItem, 'id'>) => void;
   onUpdateEvent: (ev: EventItem) => void;
   onDeleteEvent: (id: string) => void;
-  onAddBooking: (booking: Omit<EventBooking, 'id'>) => void;
+  onAddBooking: (booking: Omit<EventBooking, 'id'>) => EventBooking | void;
   onUpdateBooking: (booking: EventBooking) => void;
-  onDeleteBooking: (id: string) => void;
+  onDeleteBooking: (id: string, alsoDeleteLinkedTransactions?: boolean) => void;
   onAddMember: (member: Omit<Member, 'id'>) => Member;
   onUpdateMember: (member: Member) => void;
   onAddTransaction: (tx: Omit<CashTransaction, 'id'>) => void;
@@ -90,6 +93,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
   events,
   bookings,
   members,
+  transactions = [],
   profile = INITIAL_ASSOCIATION_PROFILE,
   googleUserEmail,
   onAddEvent,
@@ -109,6 +113,18 @@ export const EventsView: React.FC<EventsViewProps> = ({
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
   const [isFormBuilderOpen, setIsFormBuilderOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<EventItem | null>(null);
+  const [pendingPaymentTxPrompt, setPendingPaymentTxPrompt] = useState<{
+    booking: EventBooking;
+    kind: 'deposit' | 'balance';
+    amount: number;
+    method: PaymentMethod;
+    date: string;
+  } | null>(null);
+  const [confirmDeleteBookingTarget, setConfirmDeleteBookingTarget] =
+    useState<EventBooking | null>(null);
+  const [ambiguousBookingDisambiguations, setAmbiguousBookingDisambiguations] = useState<
+    { bookingId: string; childName: string; candidates: Member[] }[]
+  >([]);
   const [statusMsg, setStatusMsg] = useState<{
     text: string;
     linkUrl?: string;
@@ -136,7 +152,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
   const [evDefaultDiscountLabel, setEvDefaultDiscountLabel] = useState<string>('');
 
   // New booking form + automatic Anagrafica & CashFlow coordination + Event Discount & Voucher
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = getTodayIso();
   const [selectedMemberId, setSelectedMemberId] = useState('');
   const [childName, setChildName] = useState('');
   const [parentName, setParentName] = useState('');
@@ -202,7 +218,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
   const [syncInsurance, setSyncInsurance] = useState<InsuranceType>('Gold');
   const [syncIssueDate, setSyncIssueDate] = useState<string>(todayIso);
   const [syncValidityType, setSyncValidityType] = useState<CardValidityType>('solare');
-  const [syncExpiryDate, setSyncExpiryDate] = useState<string>(`31/12/${profile.activeYear}`);
+  const [syncExpiryDate, setSyncExpiryDate] = useState<string>(`${profile.activeYear}-12-31`);
   const [syncIsCardPaid, setSyncIsCardPaid] = useState<boolean>(true);
   const [syncAllergies, setSyncAllergies] = useState('');
   const [syncNotesConditions, setSyncNotesConditions] = useState('');
@@ -245,7 +261,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
         (bk.memberId && m.id === bk.memberId) ||
         m.childName.trim().toLowerCase() === bk.childName.trim().toLowerCase()
     );
-    const nowIso = new Date().toISOString().slice(0, 10);
+    const nowIso = getTodayIso();
     setSyncBookingTarget(bk);
     setSyncExistingMember(matched || null);
 
@@ -379,7 +395,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
     if (syncRecordCardCash && syncIsCardPaid && syncCardAmount > 0) {
       const txDate =
         syncCardCashDateMode === 'today'
-          ? new Date().toISOString().slice(0, 10)
+          ? getTodayIso()
           : syncCardCashDate;
       onAddTransaction({
         date: txDate,
@@ -387,6 +403,10 @@ export const EventsView: React.FC<EventsViewProps> = ({
         income: syncCardAmount,
         expense: null,
         method: syncCardMethod,
+        memberId: linkedMemberId,
+        bookingId: syncBookingTarget.id,
+        relatedEventId: syncBookingTarget.eventId,
+        relatedMemberName: syncChildName.trim(),
         description: `Tessera ${
           effectiveValidity === 'tessera_365' ? '365' : 'Annuale'
         } (${syncInsurance}) - ${syncChildName.trim()} (da Evento ${syncBookingTarget.eventName})`,
@@ -573,7 +593,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
     setDepositAmount(adjDep);
     setBalanceAmount(Math.max(0, calc.finalNetPrice - adjDep));
     setBookingCashDateMode('today');
-    setBookingCashDate(new Date().toISOString().slice(0, 10));
+    setBookingCashDate(getTodayIso());
     setIsAddBookingOpen(true);
   };
 
@@ -603,7 +623,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
       if (existingByName) {
         finalMemberId = existingByName.id;
       } else if (autoSyncToAnagrafica) {
-        const nowIso = new Date().toISOString().slice(0, 10);
+        const nowIso = getTodayIso();
         const createdMember = onAddMember({
           childName: childName.trim(),
           birthDate: '',
@@ -618,7 +638,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
           membershipCardNumber: '',
           isPaid: false,
           cardIssueDate: nowIso,
-          expiryDate: `31/12/${profile.activeYear}`,
+          expiryDate: `${profile.activeYear}-12-31`,
           cardValidityType: 'solare',
           insuranceType: 'Gold',
           photoConsent: true,
@@ -642,7 +662,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
       }
     }
 
-    onAddBooking({
+    const createdBooking = onAddBooking({
       eventId: currentEvent.id,
       eventName: currentEvent.name,
       memberId: finalMemberId,
@@ -676,7 +696,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
       if (paidNow > 0) {
         const txDate =
           bookingCashDateMode === 'today'
-            ? new Date().toISOString().slice(0, 10)
+            ? getTodayIso()
             : bookingCashDate;
         const cashCat =
           currentEvent.category === 'summer_camp'
@@ -690,6 +710,10 @@ export const EventsView: React.FC<EventsViewProps> = ({
           income: paidNow,
           expense: null,
           method: paymentMethod,
+          memberId: finalMemberId,
+          bookingId: createdBooking ? createdBooking.id : undefined,
+          relatedEventId: currentEvent.id,
+          relatedMemberName: childName.trim(),
           description: `${
             isDepositPaid && isBalancePaid
               ? 'Quota completa'
@@ -812,11 +836,17 @@ export const EventsView: React.FC<EventsViewProps> = ({
         const meth = normalizePaymentMethod(r[9] || 'Bonifico');
         const notes = (r[10] || '').trim();
 
-        const matchedMember = members.find(
-          (m) => m.childName.trim().toLowerCase() === cName.toLowerCase()
-        );
+        const cFiscalCode = (r[11] || '').trim();
+        const cBirthDate = (r[12] || '').trim();
 
-        onAddBooking({
+        const matchRes = matchMemberForRegistration(members, {
+          childName: cName,
+          childFiscalCode: cFiscalCode,
+          birthDate: cBirthDate,
+        });
+        const matchedMember = matchRes.status === 'unique' ? matchRes.member : undefined;
+
+        const createdBk = onAddBooking({
           eventId: currentEvent.id,
           eventName: currentEvent.name,
           memberId: matchedMember?.id,
@@ -836,6 +866,12 @@ export const EventsView: React.FC<EventsViewProps> = ({
           notes,
           confirmationEmailSent: false,
         });
+        if (matchRes.status === 'ambiguous' && createdBk) {
+          setAmbiguousBookingDisambiguations((prev) => [
+            ...prev,
+            { bookingId: createdBk.id, childName: cName, candidates: matchRes.candidates },
+          ]);
+        }
         count++;
       }
       setStatusMsg({ text: `Importati ${count} iscritti per "${currentEvent.name}"!` });
@@ -1009,6 +1045,8 @@ export const EventsView: React.FC<EventsViewProps> = ({
         const cName =
           pick(['nome e cognome bimbo', 'nome bimbo', 'partecipante']) ||
           'Partecipante Modulo';
+        const cFiscalCode = pick(['codice fiscale bimbo', 'cf bimbo', 'codice fiscale']);
+        const cBirthDate = pick(['data di nascita', 'nascita']);
         const pName = pick(['genitore', 'tutore']);
         const pEmail = pick(['email', 'mail']);
         const pPhone = pick(['telefono', 'cellulare']);
@@ -1023,21 +1061,27 @@ export const EventsView: React.FC<EventsViewProps> = ({
         }
         const notes = extraNotes.join(' | ');
 
+        const matchRes = matchMemberForRegistration(members, {
+          childName: cName,
+          childFiscalCode: cFiscalCode,
+          birthDate: cBirthDate,
+        });
+        const matchedMember = matchRes.status === 'unique' ? matchRes.member : undefined;
+
         const alreadyExists = eventBookings.some(
-          (b) => b.childName.trim().toLowerCase() === cName.trim().toLowerCase()
+          (b) =>
+            (matchedMember?.id && b.memberId === matchedMember.id) ||
+            b.childName.trim().toLowerCase() === cName.trim().toLowerCase()
         );
         if (!alreadyExists) {
-          const matchedMember = members.find(
-            (m) => m.childName.trim().toLowerCase() === cName.trim().toLowerCase()
-          );
-          onAddBooking({
+          const createdBk = onAddBooking({
             eventId: currentEvent.id,
             eventName: currentEvent.name,
             memberId: matchedMember?.id,
             childName: cName,
-            parentName: pName,
-            parentEmail: pEmail,
-            parentPhone: pPhone,
+            parentName: pName || matchedMember?.parentName || '',
+            parentEmail: pEmail || matchedMember?.parentEmail || '',
+            parentPhone: pPhone || matchedMember?.parentPhone || '',
             confirmed: true,
             depositAmount: defDep,
             balanceAmount: Math.max(0, currentEvent.memberPrice - defDep),
@@ -1050,6 +1094,12 @@ export const EventsView: React.FC<EventsViewProps> = ({
             notes,
             confirmationEmailSent: false,
           });
+          if (matchRes.status === 'ambiguous' && createdBk) {
+            setAmbiguousBookingDisambiguations((prev) => [
+              ...prev,
+              { bookingId: createdBk.id, childName: cName, candidates: matchRes.candidates },
+            ]);
+          }
           added++;
         }
       }
@@ -1725,9 +1775,20 @@ export const EventsView: React.FC<EventsViewProps> = ({
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono tabular-nums">
                             <button
-                              onClick={() =>
-                                onUpdateBooking({ ...bk, isDepositPaid: !bk.isDepositPaid })
-                              }
+                              type="button"
+                              onClick={() => {
+                                const nextPaid = !bk.isDepositPaid;
+                                onUpdateBooking({ ...bk, isDepositPaid: nextPaid });
+                                if (nextPaid && bk.depositAmount > 0) {
+                                  setPendingPaymentTxPrompt({
+                                    booking: { ...bk, isDepositPaid: true },
+                                    kind: 'deposit',
+                                    amount: bk.depositAmount,
+                                    method: bk.paymentMethod || 'Bonifico',
+                                    date: getTodayIso(),
+                                  });
+                                }
+                              }}
                               className={`font-semibold hover:underline ${
                                 bk.isDepositPaid ? 'text-emerald-700' : 'text-slate-400'
                               }`}
@@ -1738,9 +1799,20 @@ export const EventsView: React.FC<EventsViewProps> = ({
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono tabular-nums">
                             <button
-                              onClick={() =>
-                                onUpdateBooking({ ...bk, isBalancePaid: !bk.isBalancePaid })
-                              }
+                              type="button"
+                              onClick={() => {
+                                const nextPaid = !bk.isBalancePaid;
+                                onUpdateBooking({ ...bk, isBalancePaid: nextPaid });
+                                if (nextPaid && bk.balanceAmount > 0) {
+                                  setPendingPaymentTxPrompt({
+                                    booking: { ...bk, isBalancePaid: true },
+                                    kind: 'balance',
+                                    amount: bk.balanceAmount,
+                                    method: bk.paymentMethod || 'Bonifico',
+                                    date: getTodayIso(),
+                                  });
+                                }
+                              }}
                               className={`font-semibold hover:underline ${
                                 bk.isBalancePaid ? 'text-emerald-700' : 'text-rose-600'
                               }`}
@@ -1855,15 +1927,8 @@ export const EventsView: React.FC<EventsViewProps> = ({
                               )}
 
                               <button
-                                onClick={() => {
-                                  if (
-                                    confirm(
-                                      `Confermi la rimozione dell'iscritto "${bk.childName}" da questo evento?`
-                                    )
-                                  ) {
-                                    onDeleteBooking(bk.id);
-                                  }
-                                }}
+                                type="button"
+                                onClick={() => setConfirmDeleteBookingTarget(bk)}
                                 className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-md transition-colors"
                                 title="Rimuovi iscritto"
                               >
@@ -3097,6 +3162,258 @@ export const EventsView: React.FC<EventsViewProps> = ({
           }}
           isGenerating={isSyncingForm}
         />
+      )}
+
+      {/* Modal Phase 4.2: Proposta registrazione movimento di cassa quando Caparra o Saldo passa a Pagato */}
+      {pendingPaymentTxPrompt && currentEvent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-slate-900 text-base">
+                Registrare il movimento in Cassa?
+              </h3>
+              <button
+                type="button"
+                onClick={() => setPendingPaymentTxPrompt(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none p-1"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-slate-700 leading-relaxed">
+              Hai segnato{' '}
+              <strong>
+                {pendingPaymentTxPrompt.kind === 'deposit' ? 'la Caparra' : 'il Saldo'}
+              </strong>{' '}
+              di <strong>{pendingPaymentTxPrompt.booking.childName}</strong> (
+              <strong className="font-mono">{formatEuro(pendingPaymentTxPrompt.amount)}</strong>)
+              come pagato per l&apos;evento <strong>{currentEvent.name}</strong>. Vuoi registrare
+              anche il movimento nel Flusso di Cassa collegato a questa iscrizione (`bookingId`)?
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Data Movimento</label>
+                <input
+                  type="date"
+                  value={pendingPaymentTxPrompt.date}
+                  onChange={(e) =>
+                    setPendingPaymentTxPrompt((prev) =>
+                      prev ? { ...prev, date: e.target.value } : null
+                    )
+                  }
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Metodo Pagamento</label>
+                <select
+                  value={pendingPaymentTxPrompt.method}
+                  onChange={(e) =>
+                    setPendingPaymentTxPrompt((prev) =>
+                      prev ? { ...prev, method: e.target.value as PaymentMethod } : null
+                    )
+                  }
+                  className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white font-semibold"
+                >
+                  <option value="Bonifico">Bonifico</option>
+                  <option value="Contanti">Contanti</option>
+                  <option value="POS">POS / Bancomat</option>
+                  <option value="Paypal">PayPal</option>
+                </select>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingPaymentTxPrompt(null)}
+                className="px-3.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
+              >
+                No, solo stato iscrizione
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const cashCat =
+                    currentEvent.category === 'summer_camp'
+                      ? 'SummerCamp'
+                      : currentEvent.category === 'selva'
+                        ? 'Selva'
+                        : 'Evento';
+                  onAddTransaction({
+                    date: pendingPaymentTxPrompt.date || getTodayIso(),
+                    category: cashCat,
+                    income: pendingPaymentTxPrompt.amount,
+                    expense: null,
+                    method: pendingPaymentTxPrompt.method,
+                    bookingId: pendingPaymentTxPrompt.booking.id,
+                    memberId: pendingPaymentTxPrompt.booking.memberId,
+                    relatedEventId: currentEvent.id,
+                    relatedMemberName: pendingPaymentTxPrompt.booking.childName,
+                    description: `${
+                      pendingPaymentTxPrompt.kind === 'deposit' ? 'Caparra' : 'Saldo'
+                    } ${currentEvent.name} - ${pendingPaymentTxPrompt.booking.childName}`,
+                  });
+                  setPendingPaymentTxPrompt(null);
+                }}
+                className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold"
+              >
+                Sì, Registra in Cassa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Phase 4.2: Conferma eliminazione iscrizione con richiesta "Eliminare anche i N movimenti collegati?" */}
+      {confirmDeleteBookingTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="font-bold text-slate-900 text-base">
+                Conferma Eliminazione Iscrizione
+              </h3>
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteBookingTarget(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none p-1"
+              >
+                ✕
+              </button>
+            </div>
+            {(() => {
+              const linkedTxs = transactions.filter(
+                (t) => t.bookingId === confirmDeleteBookingTarget.id
+              );
+              return (
+                <>
+                  <p className="text-slate-700 leading-relaxed">
+                    Stai eliminando l&apos;iscrizione di{' '}
+                    <strong>{confirmDeleteBookingTarget.childName}</strong> dall&apos;evento{' '}
+                    <strong>{confirmDeleteBookingTarget.eventName}</strong>.
+                  </p>
+                  {linkedTxs.length > 0 ? (
+                    <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 space-y-2">
+                      <div className="font-bold">
+                        Eliminare anche i {linkedTxs.length} movimenti contabili collegati?
+                      </div>
+                      <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
+                        {linkedTxs.map((t) => (
+                          <li key={t.id}>
+                            {t.date} — {t.description} ({formatEuro(t.income || t.expense)})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteBookingTarget(null)}
+                      className="px-3 py-2 rounded-lg bg-slate-100 text-slate-700 font-semibold"
+                    >
+                      Annulla
+                    </button>
+                    {linkedTxs.length > 0 ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onDeleteBooking(confirmDeleteBookingTarget.id, false);
+                            setConfirmDeleteBookingTarget(null);
+                          }}
+                          className="px-3 py-2 rounded-lg bg-white border border-slate-300 text-slate-800 font-semibold"
+                        >
+                          No, mantieni movimenti in Cassa
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onDeleteBooking(confirmDeleteBookingTarget.id, true);
+                            setConfirmDeleteBookingTarget(null);
+                          }}
+                          className="px-3.5 py-2 rounded-lg bg-rose-700 hover:bg-rose-800 text-white font-bold"
+                        >
+                          Sì, elimina anche i {linkedTxs.length} movimenti
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onDeleteBooking(confirmDeleteBookingTarget.id, false);
+                          setConfirmDeleteBookingTarget(null);
+                        }}
+                        className="px-4 py-2 rounded-lg bg-rose-700 hover:bg-rose-800 text-white font-bold"
+                      >
+                        Conferma Eliminazione
+                      </button>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Phase 4.2: Disambiguazione omonimi in importazione iscrizioni / Google Form */}
+      {ambiguousBookingDisambiguations.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full p-6 space-y-4 text-xs">
+            <h3 className="font-bold text-slate-900 text-base">
+              Più soci omonimi trovati in Anagrafica ({ambiguousBookingDisambiguations[0].childName})
+            </h3>
+            <p className="text-slate-600">
+              Seleziona a quale scheda socio dell&apos;Anagrafica collegare l&apos;iscrizione di{' '}
+              <strong>{ambiguousBookingDisambiguations[0].childName}</strong>:
+            </p>
+            <div className="space-y-2">
+              {ambiguousBookingDisambiguations[0].candidates.map((cand) => (
+                <button
+                  key={cand.id}
+                  type="button"
+                  onClick={() => {
+                    const currentItem = ambiguousBookingDisambiguations[0];
+                    const targetBk = bookings.find((b) => b.id === currentItem.bookingId);
+                    if (targetBk) {
+                      onUpdateBooking({
+                        ...targetBk,
+                        memberId: cand.id,
+                        parentName: targetBk.parentName || cand.parentName,
+                        parentEmail: targetBk.parentEmail || cand.parentEmail,
+                        parentPhone: targetBk.parentPhone || cand.parentPhone,
+                        annualCardValid: !!cand.isPaid,
+                      });
+                    }
+                    setAmbiguousBookingDisambiguations((prev) => prev.slice(1));
+                  }}
+                  className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/40 transition-colors flex items-center justify-between"
+                >
+                  <div>
+                    <div className="font-bold text-slate-900">
+                      {cand.childName} (Nato/a il {cand.birthDate || '-'})
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      C.F. {cand.childFiscalCode || '-'} · Genitore: {cand.parentName || '-'} · Tessera: {cand.membershipCardNumber || '-'}
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-lg bg-emerald-700 text-white font-bold text-[11px]">
+                    Collega questo socio
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setAmbiguousBookingDisambiguations((prev) => prev.slice(1))}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 font-semibold"
+              >
+                Lascia non collegato
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

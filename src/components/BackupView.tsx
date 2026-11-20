@@ -28,6 +28,7 @@ import {
   exportBackupJSON,
   parseBackupJSON,
   computeYearTransitionMemberStats,
+  downloadJsonBackup,
 } from '../utils/storage';
 import {
   exportTransactionsToCSV,
@@ -36,12 +37,14 @@ import {
   exportArchivedYearToExcel,
 } from '../utils/export';
 import { formatEuro, calculateCashTotals } from '../utils/finance';
+import { todayIso } from '../utils/dates';
 import {
   AssociationProfile,
   Member,
   CashTransaction,
   ArchivedFiscalYear,
   GoogleFormFieldConfig,
+  DriveBackupEntry,
 } from '../types';
 import {
   DriveFileItem,
@@ -55,6 +58,11 @@ import {
   getSpreadsheetMetadata,
   readSpreadsheetSheet,
   createGoogleFormForActivity,
+  createDriveBackupSnapshot,
+  listDriveBackups,
+  loadDriveBackupById,
+  saveArchivedYearFileToDrive,
+  loadArchivedYearFileFromDrive,
 } from '../services/googleWorkspace';
 import {
   downloadEmptyExcelTemplate,
@@ -62,6 +70,7 @@ import {
   parseTransactionsFromRows,
 } from '../utils/csvExcelImporter';
 import { compressImageFileToDataUrl } from '../utils/formAndReceiptTemplates';
+import { extractGoogleSpreadsheetId } from '../utils/sanitize';
 import { GoogleSignInButton } from './GoogleSignInButton';
 import { GoogleFormBuilderModal } from './GoogleFormBuilderModal';
 
@@ -73,11 +82,14 @@ interface BackupViewProps {
   onRestoreState: (state: AppState) => void;
   onResetToDefaults: () => void;
   onArchiveFiscalYear: (targetNewYear: number) => ArchivedFiscalYear | null;
+  onUpdateArchivedYear?: (updated: ArchivedFiscalYear) => void;
+  onAnonymizeArchivedHealthData?: (minAgeYears?: number) => number;
   onUpdateProfile: (profile: AssociationProfile) => void;
   onImportMembers: (members: Member[], mode: 'append' | 'replace') => void;
   onImportTransactions: (txs: CashTransaction[], mode: 'append' | 'replace') => void;
   onOpenReceiptCustomizer?: () => void;
   onOpenDigitalCardDesigner?: () => void;
+  onOpenOnboardingWizard?: () => void;
   localFileName?: string | null;
   lastLocalSavedAt?: string | null;
   onConnectLocalFile?: () => void;
@@ -92,11 +104,14 @@ export const BackupView: React.FC<BackupViewProps> = ({
   onRestoreState,
   onResetToDefaults,
   onArchiveFiscalYear,
+  onUpdateArchivedYear,
+  onAnonymizeArchivedHealthData,
   onUpdateProfile,
   onImportMembers,
   onImportTransactions,
   onOpenReceiptCustomizer,
   onOpenDigitalCardDesigner,
+  onOpenOnboardingWizard,
   localFileName,
   lastLocalSavedAt,
   onConnectLocalFile,
@@ -122,10 +137,95 @@ export const BackupView: React.FC<BackupViewProps> = ({
   } | null>(null);
   const [driveSpreadsheets, setDriveSpreadsheets] = useState<DriveFileItem[]>([]);
   const [selectedSheetId, setSelectedSheetId] = useState<string>('');
+  const [pastedSheetUrlOrId, setPastedSheetUrlOrId] = useState<string>('');
   const [importTargetType, setImportTargetType] = useState<'soci' | 'cassa'>('soci');
   const [driveStructureLinks, setDriveStructureLinks] = useState<
     Record<string, DriveFileItem> | null
   >(null);
+  const [driveBackups, setDriveBackups] = useState<DriveBackupEntry[]>([]);
+  const [isLoadingDriveBackups, setIsLoadingDriveBackups] = useState(false);
+
+  const refreshDriveBackupsList = async () => {
+    if (!googleUserEmail) {
+      setDriveBackups([]);
+      return;
+    }
+    try {
+      setIsLoadingDriveBackups(true);
+      const list = await listDriveBackups();
+      setDriveBackups(list);
+    } catch {
+      // ignore if token expired or offline
+    } finally {
+      setIsLoadingDriveBackups(false);
+    }
+  };
+
+  useEffect(() => {
+    if (googleUserEmail) {
+      void refreshDriveBackupsList();
+    } else {
+      setDriveBackups([]);
+    }
+  }, [googleUserEmail]);
+
+  const handleCreateManualDriveSnapshot = async () => {
+    try {
+      setIsLoadingDriveBackups(true);
+      const entry = await createDriveBackupSnapshot(appState, 'manual');
+      setWorkspaceStatus({
+        type: 'ok',
+        text: `Punto di ripristino creato su Google Drive: ${entry.name} (v${appState.version || 1})`,
+        linkUrl: entry.webViewLink,
+        linkLabel: 'Apri file su Drive',
+      });
+      await refreshDriveBackupsList();
+    } catch (err: any) {
+      setWorkspaceStatus({
+        type: 'err',
+        text: err?.message || 'Impossibile creare il punto di ripristino su Google Drive',
+      });
+    } finally {
+      setIsLoadingDriveBackups(false);
+    }
+  };
+
+  const handleDownloadDriveSnapshot = async (entry: DriveBackupEntry) => {
+    try {
+      setIsLoadingDriveBackups(true);
+      const state = await loadDriveBackupById(entry.id);
+      downloadJsonBackup(state, entry.name);
+    } catch (err: any) {
+      setWorkspaceStatus({
+        type: 'err',
+        text: err?.message || 'Impossibile scaricare il backup selezionato da Google Drive',
+      });
+    } finally {
+      setIsLoadingDriveBackups(false);
+    }
+  };
+
+  const handleRestoreDriveSnapshot = async (entry: DriveBackupEntry) => {
+    try {
+      setIsLoadingDriveBackups(true);
+      // Save current state as a pre-overwrite backup first so nothing is ever lost
+      await createDriveBackupSnapshot(appState, 'pre-overwrite').catch(() => {});
+      const restoredState = await loadDriveBackupById(entry.id);
+      onRestoreState(restoredState);
+      setWorkspaceStatus({
+        type: 'ok',
+        text: `Ripristinato con successo il backup "${entry.name}". La versione precedente è stata salvata in Backup_Automatici.`,
+      });
+      await refreshDriveBackupsList();
+    } catch (err: any) {
+      setWorkspaceStatus({
+        type: 'err',
+        text: err?.message || 'Errore durante il ripristino del backup da Google Drive',
+      });
+    } finally {
+      setIsLoadingDriveBackups(false);
+    }
+  };
 
   const currentTotals = calculateCashTotals(
     appState.transactions,
@@ -221,12 +321,14 @@ export const BackupView: React.FC<BackupViewProps> = ({
     if (archivedSnapshot && googleUserEmail) {
       setIsSyncing(true);
       try {
-        const jsonContent = JSON.stringify(archivedSnapshot, null, 2);
-        const uploaded = await uploadFileToDrive({
-          name: `Archivio_Annualita_${currentYear}_${appState.profile.name.replace(/\s+/g, '_')}.json`,
-          content: jsonContent,
-          mimeType: 'application/json',
-          category: 'archivio_annualita',
+        const uploaded = await saveArchivedYearFileToDrive(
+          archivedSnapshot,
+          appState.profile.name
+        );
+        onUpdateArchivedYear?.({
+          ...archivedSnapshot,
+          driveFileId: uploaded.fileId,
+          driveWebViewLink: uploaded.webViewLink,
         });
         setWorkspaceStatus({
           type: 'ok',
@@ -260,19 +362,14 @@ export const BackupView: React.FC<BackupViewProps> = ({
       return;
     }
 
-    const confirmed = confirm(
-      `Vuoi salvare l'archivio completo dell'Anno ${arch.year} nella cartella Google Drive "Gestionale ASD / 06_Archivio_Annualita_Storiche"?`
-    );
-    if (!confirmed) return;
-
     setIsSyncing(true);
     setWorkspaceStatus(null);
     try {
-      const uploaded = await uploadFileToDrive({
-        name: `Archivio_Annualita_${arch.year}_${appState.profile.name.replace(/\s+/g, '_')}.json`,
-        content: JSON.stringify(arch, null, 2),
-        mimeType: 'application/json',
-        category: 'archivio_annualita',
+      const uploaded = await saveArchivedYearFileToDrive(arch, appState.profile.name);
+      onUpdateArchivedYear?.({
+        ...arch,
+        driveFileId: uploaded.fileId,
+        driveWebViewLink: uploaded.webViewLink,
       });
       setWorkspaceStatus({
         type: 'ok',
@@ -288,6 +385,79 @@ export const BackupView: React.FC<BackupViewProps> = ({
     } finally {
       setIsSyncing(false);
     }
+  };
+
+  // Phase 6.2: Toggle hybrid light-summary mode (keep full detail arrays on Drive only, or reload them on demand)
+  const handleToggleLightArchivedYear = async (arch: ArchivedFiscalYear) => {
+    if (!arch.driveFileId || !onUpdateArchivedYear) return;
+
+    if (!arch.isLightSummaryOnly) {
+      // Offload heavy arrays in main database_gestionale_asd.json while keeping summary & driveFileId
+      onUpdateArchivedYear({
+        ...arch,
+        transactions: [],
+        membersSnapshot: [],
+        events: [],
+        bookings: [],
+        gadgetOrders: [],
+        isLightSummaryOnly: true,
+      });
+      setWorkspaceStatus({
+        type: 'ok',
+        text: `Archivio Anno ${arch.year} alleggerito nel database principale: il riepilogo bilanci rimane visibile e i dettagli completi sono custoditi nel file dedicato su Google Drive.`,
+        linkUrl: arch.driveWebViewLink,
+        linkLabel: 'Vedi file completo su Drive',
+      });
+    } else {
+      // Reload full details from Drive file
+      setIsSyncing(true);
+      setWorkspaceStatus(null);
+      try {
+        const fullArchive = await loadArchivedYearFileFromDrive(arch.driveFileId);
+        onUpdateArchivedYear({
+          ...fullArchive,
+          id: arch.id,
+          driveFileId: arch.driveFileId,
+          driveWebViewLink: arch.driveWebViewLink,
+          isLightSummaryOnly: false,
+        });
+        setWorkspaceStatus({
+          type: 'ok',
+          text: `Dettagli completi dell'Archivio Anno ${arch.year} ricaricati da Google Drive!`,
+        });
+      } catch (err: any) {
+        setWorkspaceStatus({
+          type: 'err',
+          text:
+            err?.message ||
+            `Impossibile ricaricare i dettagli dell'Anno ${arch.year} da Google Drive.`,
+        });
+      } finally {
+        setIsSyncing(false);
+      }
+    }
+  };
+
+  const handleExportArchivedYearExcelWithOnDemandLoad = async (arch: ArchivedFiscalYear) => {
+    if (arch.isLightSummaryOnly && arch.driveFileId) {
+      setIsSyncing(true);
+      try {
+        const fullArchive = await loadArchivedYearFileFromDrive(arch.driveFileId);
+        await exportArchivedYearToExcel(fullArchive, appState.profile.name);
+        return;
+      } catch (err: any) {
+        setWorkspaceStatus({
+          type: 'err',
+          text:
+            err?.message ||
+            `Connetti Google Drive per scaricare i dettagli completi dell'Anno ${arch.year} prima dell'esportazione Excel.`,
+        });
+        return;
+      } finally {
+        setIsSyncing(false);
+      }
+    }
+    await exportArchivedYearToExcel(arch, appState.profile.name);
   };
 
   const handleExportAllToGoogleSheets = async () => {
@@ -411,8 +581,13 @@ export const BackupView: React.FC<BackupViewProps> = ({
         ]),
       ];
 
+      const safeSlug =
+        (appState.profile.name || 'ASD')
+          .trim()
+          .replace(/[^a-zA-Z0-9_-]+/g, '_')
+          .replace(/^_+|_+$/g, '') || 'ASD';
       const res = await createAndPopulateSpreadsheet(
-        `Gestionale_Apuacamp_${appState.profile.activeYear}_${new Date()
+        `Gestionale_${safeSlug}_${appState.profile.activeYear}_${new Date()
           .toISOString()
           .slice(0, 10)}`,
         [
@@ -442,11 +617,12 @@ export const BackupView: React.FC<BackupViewProps> = ({
   };
 
   const handleImportFromGoogleSheet = async () => {
-    if (!selectedSheetId) return;
+    const effectiveSheetId = extractGoogleSpreadsheetId(pastedSheetUrlOrId) || selectedSheetId;
+    if (!effectiveSheetId) return;
     setIsSyncing(true);
     setWorkspaceStatus(null);
     try {
-      const meta = await getSpreadsheetMetadata(selectedSheetId);
+      const meta = await getSpreadsheetMetadata(effectiveSheetId);
       let targetTab = meta.sheets[0] || 'Sheet1';
       if (importTargetType === 'cassa' && meta.sheets.length > 1) {
         const cashTab = meta.sheets.find((s) => {
@@ -469,7 +645,7 @@ export const BackupView: React.FC<BackupViewProps> = ({
         if (sociTab) targetTab = sociTab;
       }
 
-      const rows = await readSpreadsheetSheet(selectedSheetId, targetTab);
+      const rows = await readSpreadsheetSheet(effectiveSheetId, targetTab);
 
       if (importTargetType === 'soci') {
         const parsed = parseMembersFromRows(rows);
@@ -511,7 +687,12 @@ export const BackupView: React.FC<BackupViewProps> = ({
     setWorkspaceStatus(null);
     try {
       const jsonStr = exportBackupJSON(appState);
-      const fileName = `Backup_Apuacamp_${appState.profile.activeYear}_${new Date().toISOString().slice(0, 10)}.json`;
+      const safeSlug =
+        (appState.profile.name || 'ASD')
+          .trim()
+          .replace(/[^a-zA-Z0-9_-]+/g, '_')
+          .replace(/^_+|_+$/g, '') || 'ASD';
+      const fileName = `Backup_${safeSlug}_${appState.profile.activeYear}_${todayIso()}.json`;
       const uploaded = await uploadFileToDrive({
         name: fileName,
         content: jsonStr,
@@ -581,7 +762,12 @@ export const BackupView: React.FC<BackupViewProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Backup_Apuacamp_ASD_${appState.profile.activeYear}_${new Date().toISOString().slice(0, 10)}.json`;
+    const safeSlug =
+      (appState.profile.name || 'ASD')
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'ASD';
+    a.download = `Backup_${safeSlug}_${appState.profile.activeYear}_${todayIso()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -664,7 +850,7 @@ export const BackupView: React.FC<BackupViewProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold text-slate-900 text-base">
-                  Salvataggio su File Locale PC (OneDrive / Dropbox / Disco Fisso) — Zero Memoria Browser
+                  Salvataggio su File Locale PC (OneDrive / Dropbox / Disco Fisso) & Copia di Sicurezza Locale
                 </h3>
                 {localFileName ? (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
@@ -678,11 +864,12 @@ export const BackupView: React.FC<BackupViewProps> = ({
                 )}
               </div>
               <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                Come richiesto, i dati <strong>non vengono salvati nella memoria temporanea del browser</strong>{' '}
-                per evitare qualsiasi rischio di perdita. Puoi lavorare direttamente su un file{' '}
-                <strong className="font-mono">.json</strong> sul tuo computer (anche posizionato dentro una
-                cartella sincronizzata <strong>OneDrive, Dropbox o iCloud Drive</strong>) oppure usare{' '}
-                <strong>Google Drive</strong> qui sotto.
+                Puoi lavorare direttamente su un file <strong className="font-mono">.json</strong> sul tuo
+                computer (anche dentro una cartella sincronizzata <strong>OneDrive, Dropbox o iCloud Drive</strong>)
+                oppure usare <strong>Google Drive</strong> qui sotto. Per proteggerti da chiusure impreviste,
+                l&apos;app mantiene una copia locale di sicurezza su questo computer (IndexedDB) che puoi
+                cancellare in un clic quando ti disconnetti scegliendo{' '}
+                <strong>&ldquo;Esci e cancella i dati da questo computer&rdquo;</strong>.
               </p>
             </div>
           </div>
@@ -846,6 +1033,141 @@ export const BackupView: React.FC<BackupViewProps> = ({
             );
           })}
         </div>
+
+        {/* VERSIONED AUTOMATIC BACKUPS ON GOOGLE DRIVE (Phase 1.6) */}
+        {googleUserEmail && (
+          <div className="mt-4 pt-4 border-t border-slate-200 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <RotateCcw className="w-4 h-4 text-emerald-600" />
+                  <span>
+                    Punti di Ripristino e Backup Automatici su Google Drive (v
+                    {appState.version || 1})
+                  </span>
+                </h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Il gestionale salva automaticamente copie datate in{' '}
+                  <code className="font-mono text-[11px] bg-slate-100 px-1.5 py-0.5 rounded">
+                    07_Backup_Sistema / Backup_Automatici
+                  </code>{' '}
+                  una volta al giorno (ultimi 30 conservati) e prima di ogni importazione,
+                  eliminazione multipla o chiusura annuale.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={refreshDriveBackupsList}
+                  disabled={isLoadingDriveBackups}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${isLoadingDriveBackups ? 'animate-spin' : ''}`}
+                  />
+                  <span>Aggiorna Elenco</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateManualDriveSnapshot}
+                  disabled={isLoadingDriveBackups}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-2xs transition"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Crea Punto di Ripristino Ora</span>
+                </button>
+              </div>
+            </div>
+
+            {driveBackups.length === 0 ? (
+              <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl p-3.5">
+                {isLoadingDriveBackups
+                  ? 'Ricerca punti di ripristino su Google Drive in corso...'
+                  : 'Nessun punto di ripristino automatico ancora presente. Clicca su "Crea Punto di Ripristino Ora" oppure esegui una modifica per generare il primo snapshot.'}
+              </div>
+            ) : (
+              <div className="max-h-56 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl bg-white">
+                {driveBackups.slice(0, 20).map((b) => {
+                  const reasonLabels: Record<string, { label: string; color: string }> = {
+                    daily: {
+                      label: 'Giornaliero',
+                      color: 'bg-sky-50 text-sky-700 border-sky-200',
+                    },
+                    'pre-import': {
+                      label: 'Pre-Importazione',
+                      color: 'bg-amber-50 text-amber-800 border-amber-200',
+                    },
+                    'pre-bulk-delete': {
+                      label: 'Pre-Eliminazione',
+                      color: 'bg-rose-50 text-rose-700 border-rose-200',
+                    },
+                    'pre-archive': {
+                      label: 'Pre-Chiusura Anno',
+                      color: 'bg-purple-50 text-purple-700 border-purple-200',
+                    },
+                    'pre-overwrite': {
+                      label: 'Pre-Ripristino / Conflitto',
+                      color: 'bg-orange-50 text-orange-800 border-orange-200',
+                    },
+                    manual: {
+                      label: 'Punto Manuale',
+                      color: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                    },
+                  };
+                  const badge =
+                    reasonLabels[b.reason || 'manual'] || reasonLabels.manual;
+                  return (
+                    <div
+                      key={b.id}
+                      className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 text-xs hover:bg-slate-50"
+                    >
+                      <div className="min-w-0 flex items-center gap-2.5 flex-wrap">
+                        <span
+                          className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${badge.color}`}
+                        >
+                          {badge.label}
+                        </span>
+                        <span className="font-mono font-semibold text-slate-800 truncate">
+                          {b.name}
+                        </span>
+                        {b.version && (
+                          <span className="text-[11px] font-mono text-slate-500">
+                            (v{b.version})
+                          </span>
+                        )}
+                        {b.modifiedTime && (
+                          <span className="text-[11px] text-slate-400">
+                            {new Date(b.modifiedTime).toLocaleString('it-IT')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadDriveSnapshot(b)}
+                          disabled={isLoadingDriveBackups}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-semibold text-[11px]"
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>Scarica</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreDriveSnapshot(b)}
+                          disabled={isLoadingDriveBackups}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold text-[11px]"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Ripristina</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* SECTION 1: CHIUSURA E ARCHIVIAZIONE ANNO SPORTIVO & PASSAGGIO ALL'ANNO NUOVO (2026 E ANNI FUTURI) */}
@@ -997,10 +1319,58 @@ export const BackupView: React.FC<BackupViewProps> = ({
         </div>
 
         {/* List of Archived Fiscal Years */}
-        <div className="space-y-2.5">
-          <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
-            Annualità Archiviate nello Storico ({appState.archivedYears.length})
-          </h4>
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
+              Annualità Archiviate nello Storico ({appState.archivedYears.length})
+            </h4>
+
+            {/* Phase 5.2: Health Data Retention Policy in Historical Archives */}
+            <div className="flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs">
+              <span className="font-semibold text-slate-700">
+                Conservazione dati sanitari negli archivi (Allergie/BES):
+              </span>
+              <select
+                value={appState.profile.archiveHealthDataRetentionYears ?? 0}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  const updated = {
+                    ...appState.profile,
+                    archiveHealthDataRetentionYears: val > 0 ? val : undefined,
+                  };
+                  setProfileForm(updated);
+                  onUpdateProfile(updated);
+                }}
+                className="px-2 py-1 rounded border border-slate-300 bg-white font-semibold text-slate-800 text-xs"
+              >
+                <option value={0}>Conserva fino ad anonimizzazione manuale</option>
+                <option value={1}>Anonimizza archivi oltre 1 anno</option>
+                <option value={2}>Anonimizza archivi oltre 2 anni</option>
+                <option value={3}>Anonimizza archivi oltre 3 anni</option>
+                <option value={5}>Anonimizza archivi oltre 5 anni</option>
+              </select>
+              {onAnonymizeArchivedHealthData && appState.archivedYears.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const minAge = appState.profile.archiveHealthDataRetentionYears ?? 0;
+                    const count = onAnonymizeArchivedHealthData(minAge);
+                    setWorkspaceStatus({
+                      type: 'ok',
+                      text:
+                        count > 0
+                          ? `Anonimizzati i campi allergie e note sanitarie/BES per ${count} schede negli archivi storici.`
+                          : 'Nessun dato sanitario da anonimizzare negli archivi selezionati.',
+                    });
+                  }}
+                  className="px-2.5 py-1 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-semibold text-[11px] transition-colors"
+                >
+                  Anonimizza dati sanitari negli archivi
+                </button>
+              )}
+            </div>
+          </div>
+
           {appState.archivedYears.length === 0 ? (
             <div className="p-6 text-center bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-400">
               Nessuna annualità ancora archiviata. Quando chiuderai l'esercizio{' '}
@@ -1015,13 +1385,23 @@ export const BackupView: React.FC<BackupViewProps> = ({
                   className="p-4 bg-white hover:bg-slate-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
                 >
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="px-2.5 py-0.5 rounded-md bg-slate-900 text-white font-mono font-bold text-xs">
                         Anno {arch.year}
                       </span>
                       <span className="text-slate-500 font-mono text-[11px]">
                         Archiviato il {new Date(arch.archivedAt).toLocaleDateString('it-IT')}
                       </span>
+                      {arch.driveFileId && (
+                        <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 font-semibold text-[10px]">
+                          Su Google Drive
+                        </span>
+                      )}
+                      {arch.isLightSummaryOnly && (
+                        <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-semibold text-[10px]">
+                          Archivio Leggero (dettagli su Drive)
+                        </span>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-4 mt-1.5 font-mono text-[11px] text-slate-600">
                       <span>
@@ -1033,28 +1413,45 @@ export const BackupView: React.FC<BackupViewProps> = ({
                       <span>Entrate: +{formatEuro(arch.summary.totalIncome)}</span>
                       <span>Uscite: -{formatEuro(arch.summary.totalExpense)}</span>
                       <span>
-                        {arch.transactions.length} movimenti · {arch.membersSnapshot.length} soci ·{' '}
-                        {arch.events.length} eventi
+                        {arch.isLightSummaryOnly
+                          ? `${arch.summary.membersCount} soci · ${arch.summary.eventsCount} eventi (dettagli su Drive)`
+                          : `${arch.transactions.length} movimenti · ${arch.membersSnapshot.length} soci · ${arch.events.length} eventi`}
                       </span>
                     </div>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <button
-                      onClick={() => exportArchivedYearToExcel(arch, appState.profile.name)}
+                      onClick={() => handleExportArchivedYearExcelWithOnDemandLoad(arch)}
+                      disabled={isSyncing}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors"
                     >
                       <FileSpreadsheet className="w-3.5 h-3.5" />
                       <span>Esporta Excel ({arch.year})</span>
                     </button>
-                    {googleUserEmail && (
+                    {googleUserEmail && !arch.isLightSummaryOnly && (
                       <button
                         onClick={() => handleSaveArchivedYearToDrive(arch)}
                         disabled={isSyncing}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
                       >
                         <HardDrive className="w-3.5 h-3.5 text-blue-600" />
-                        <span>Salva su Drive</span>
+                        <span>{arch.driveFileId ? 'Aggiorna su Drive' : 'Salva su Drive'}</span>
+                      </button>
+                    )}
+                    {googleUserEmail && arch.driveFileId && onUpdateArchivedYear && (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleLightArchivedYear(arch)}
+                        disabled={isSyncing}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-colors"
+                      >
+                        <Database className="w-3.5 h-3.5" />
+                        <span>
+                          {arch.isLightSummaryOnly
+                            ? 'Ricarica dettagli da Drive'
+                            : 'Alleggerisci (dettagli su Drive)'}
+                        </span>
                       </button>
                     )}
                   </div>
@@ -1134,14 +1531,13 @@ export const BackupView: React.FC<BackupViewProps> = ({
               </button>
             </div>
 
-            <div className="md:col-span-3 p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="md:col-span-3 p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <div>
                 <div className="font-bold text-slate-900">
                   Importa Dati da un Foglio Google Sheets nel tuo Drive
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Seleziona uno dei tuoi fogli Google Sheets per importare soci o movimenti di
-                  cassa.
+                  Seleziona un foglio creato dal gestionale (permesso <code className="font-mono">drive.file</code>) oppure incolla il link o l&apos;ID di qualsiasi Foglio Google del tuo account.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1159,7 +1555,7 @@ export const BackupView: React.FC<BackupViewProps> = ({
                   className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white max-w-xs"
                 >
                   {driveSpreadsheets.length === 0 ? (
-                    <option value="">Nessun foglio Google trovato</option>
+                    <option value="">Fogli creati dall&apos;app (nessuno)</option>
                   ) : (
                     driveSpreadsheets.map((f) => (
                       <option key={f.id} value={f.id}>
@@ -1168,9 +1564,19 @@ export const BackupView: React.FC<BackupViewProps> = ({
                     ))
                   )}
                 </select>
+                <input
+                  type="text"
+                  value={pastedSheetUrlOrId}
+                  onChange={(e) => setPastedSheetUrlOrId(e.target.value)}
+                  placeholder="Oppure incolla link / ID Foglio Google..."
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white min-w-[220px]"
+                />
                 <button
                   onClick={handleImportFromGoogleSheet}
-                  disabled={!selectedSheetId || isSyncing}
+                  disabled={
+                    (!selectedSheetId && !extractGoogleSpreadsheetId(pastedSheetUrlOrId)) ||
+                    isSyncing
+                  }
                   className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-semibold rounded-lg transition-colors"
                 >
                   Importa da Foglio
@@ -1232,7 +1638,7 @@ export const BackupView: React.FC<BackupViewProps> = ({
                 <p className="text-[11px] text-slate-500 mt-1">{tpl.desc}</p>
               </div>
               <button
-                onClick={() => downloadEmptyExcelTemplate(tpl.type)}
+                onClick={() => downloadEmptyExcelTemplate(tpl.type, appState.profile.name)}
                 className="w-full flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -1312,14 +1718,16 @@ export const BackupView: React.FC<BackupViewProps> = ({
               <span>Esporta Contabilità (.XLSX)</span>
             </button>
             <button
-              onClick={() => exportTransactionsToCSV(appState.transactions)}
+              onClick={() =>
+                exportTransactionsToCSV(appState.transactions, appState.profile.name)
+              }
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
               <span>Flusso Cassa (.CSV)</span>
             </button>
             <button
-              onClick={() => exportMembersToCSV(appState.members)}
+              onClick={() => exportMembersToCSV(appState.members, appState.profile.name)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
@@ -1331,23 +1739,36 @@ export const BackupView: React.FC<BackupViewProps> = ({
 
       {/* SECTION 5: ASSOCIATION PROFILE SETTINGS (MULTI-ASD READY) */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-2xs space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="font-bold text-slate-900 text-base">
               Dati Istituzionali della tua ASD (Anno Sportivo {profileForm.activeYear}) — Multi-ASD
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
               Qualsiasi ASD che accede con il proprio account Google può personalizzare qui i propri
-              dati (Denominazione, CF, Ente di Affiliazione, IBAN): il gestionale, le ricevute PDF e
-              il salvataggio in diretta sul proprio Google Drive si adattano automaticamente.
+              dati (Denominazione, CF, Ente di Affiliazione, IBAN, Tessere, Categorie e Soci Adulti):
+              il gestionale, le ricevute PDF e il salvataggio in diretta sul proprio Google Drive si
+              adattano automaticamente.
             </p>
           </div>
-          {profileSaved && (
-            <span className="flex items-center gap-1 text-xs text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              Salvato!
-            </span>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {onOpenOnboardingWizard && (
+              <button
+                type="button"
+                onClick={onOpenOnboardingWizard}
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-lg transition-colors shadow-2xs"
+              >
+                <Sliders className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Configurazione Guidata (Tessere, Categorie, Ente, Soci Adulti)</span>
+              </button>
+            )}
+            {profileSaved && (
+              <span className="flex items-center gap-1 text-xs text-emerald-700 font-semibold bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Salvato!
+              </span>
+            )}
+          </div>
         </div>
 
         <form onSubmit={handleSaveProfile} className="space-y-4 text-xs pt-2">
@@ -1448,6 +1869,52 @@ export const BackupView: React.FC<BackupViewProps> = ({
                 className="w-full px-3 py-2 rounded-lg border border-slate-200 font-mono"
               />
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(profileForm.hasAdultMembers)}
+                onChange={(e) =>
+                  setProfileForm({ ...profileForm, hasAdultMembers: e.target.checked })
+                }
+                className="mt-0.5 rounded border-slate-300 text-emerald-600"
+              />
+              <div>
+                <div className="font-bold text-slate-900">
+                  Gestione Soci Adulti (oltre ai minori)
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Attiva l&apos;opzione &ldquo;Socio Adulto (Maggiorenne)&rdquo; nell&apos;Anagrafica
+                  Soci (campi genitore facoltativi ed etichetta &ldquo;Socio / Partecipante&rdquo;).
+                </p>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(profileForm.showApuacampAttributionInDocs)}
+                onChange={(e) =>
+                  setProfileForm({
+                    ...profileForm,
+                    showApuacampAttributionInDocs: e.target.checked,
+                  })
+                }
+                className="mt-0.5 rounded border-slate-300 text-emerald-600"
+              />
+              <div>
+                <div className="font-bold text-slate-900">
+                  Includi dicitura &ldquo;Piattaforma Gestionale ideata da ASD Apuacamp&rdquo; nei
+                  PDF/Tessere
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Se disattivato, le ricevute e le tessere generate riportano esclusivamente la
+                  denominazione della tua associazione.
+                </p>
+              </div>
+            </label>
           </div>
 
           {/* Stamp & Signature Upload + Custom Form & Receipt Templates */}

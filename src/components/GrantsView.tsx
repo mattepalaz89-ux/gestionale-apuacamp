@@ -2,8 +2,6 @@ import React, { useState } from 'react';
 import {
   Award,
   Plus,
-  Calendar,
-  Clock,
   FileText,
   Phone,
   Info,
@@ -19,6 +17,8 @@ import {
 import { GrantItem, GrantStatus, GrantDocument } from '../types';
 import { formatEuro } from '../utils/finance';
 import { parseAnyDate, diffDays } from '../utils/notifications';
+import { todayIso } from '../utils/dates';
+import { newId } from '../utils/ids';
 import {
   uploadFileToDrive,
   getOrCreateDriveCategoryFolder,
@@ -176,10 +176,10 @@ export const GrantsView: React.FC<GrantsViewProps> = ({
     if (!activeGrant || !newDocName.trim()) return;
 
     const newDoc: GrantDocument = {
-      id: `gdoc-${Date.now()}`,
+      id: newId('gdoc'),
       name: newDocName.trim(),
       category: newDocCategory,
-      uploadedAt: new Date().toISOString().slice(0, 10),
+      uploadedAt: todayIso(),
       notes: newDocNotes.trim(),
     };
 
@@ -201,10 +201,10 @@ export const GrantsView: React.FC<GrantsViewProps> = ({
     if (!googleUserEmail) {
       // If not connected to Google Drive yet, still register the document in the Bando card
       const newDoc: GrantDocument = {
-        id: `gdoc-${Date.now()}`,
+        id: newId('gdoc'),
         name: file.name,
         category: newDocCategory,
-        uploadedAt: new Date().toISOString().slice(0, 10),
+        uploadedAt: todayIso(),
         notes: newDocNotes.trim() || 'Registrato localmente (connetti Google Drive per cloud)',
       };
       onUpdateGrant({
@@ -238,10 +238,10 @@ export const GrantsView: React.FC<GrantsViewProps> = ({
       });
 
       const newDoc: GrantDocument = {
-        id: `gdoc-${Date.now()}`,
+        id: newId('gdoc'),
         name: file.name,
         category: newDocCategory,
-        uploadedAt: new Date().toISOString().slice(0, 10),
+        uploadedAt: todayIso(),
         driveFileId: uploaded.id,
         driveFileUrl: uploaded.webViewLink,
         notes: newDocNotes.trim() || 'Archiviato su Google Drive (05_Bandi_e_Progetti)',
@@ -286,7 +286,7 @@ export const GrantsView: React.FC<GrantsViewProps> = ({
     try {
       const { categoryFolder } = await getOrCreateDriveCategoryFolder('bandi_progetti');
       const content = [
-        `SCHEDA TECNICA BANDO E FINANZIAMENTO — APUACAMP A.S.D.`,
+        `SCHEDA TECNICA BANDO E FINANZIAMENTO — ASSOCIAZIONE SPORTIVA DILETTANTISTICA`,
         `====================================================================`,
         `Titolo Bando: ${grant.title}`,
         `Ente Erogatore / Promotore: ${grant.promoter}`,

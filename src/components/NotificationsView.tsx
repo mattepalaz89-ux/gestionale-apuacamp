@@ -27,6 +27,7 @@ import {
   AssemblyMeeting,
   GrantItem,
   CashTransaction,
+  StaffMember,
   NotificationCategory,
   NotificationResolutionRecord,
   CriticalDeadlineCategory,
@@ -40,6 +41,8 @@ import {
   diffDays,
 } from '../utils/notifications';
 import { formatEuro } from '../utils/finance';
+import { todayIso } from '../utils/dates';
+import { newId } from '../utils/ids';
 import { NavTab } from './Sidebar';
 
 interface NotificationsViewProps {
@@ -51,6 +54,7 @@ interface NotificationsViewProps {
   assemblies: AssemblyMeeting[];
   grants: GrantItem[];
   transactions?: CashTransaction[];
+  staff?: StaffMember[];
   profile: AssociationProfile;
   onUpdateProfile: (profile: AssociationProfile) => void;
   onAddGrant?: (grant: Omit<GrantItem, 'id'>) => void;
@@ -70,6 +74,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   assemblies,
   grants,
   transactions = [],
+  staff = [],
   profile,
   onUpdateProfile,
   onAddGrant,
@@ -108,7 +113,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   const [postponeDateInput, setPostponeDateInput] = useState<string>(() => {
     const d = new Date();
     d.setDate(d.getDate() + 7);
-    return d.toISOString().slice(0, 10);
+    return todayIso(d);
   });
 
   const rawNotifications = useMemo(
@@ -127,7 +132,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
         undefined,
         profile.customDeadlines || [],
         profile.completedDeadlineIds || [],
-        profile.duplicateDetectionMode || 'strict'
+        profile.duplicateDetectionMode || 'strict',
+        staff,
+        profile.activeYear,
+        profile.staffThresholds
       ),
     [
       members,
@@ -142,6 +150,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       profile.customDeadlines,
       profile.completedDeadlineIds,
       profile.duplicateDetectionMode,
+      staff,
+      profile.activeYear,
+      profile.staffThresholds,
     ]
   );
 
@@ -175,7 +186,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       itemId: notifId,
       status: 'resolved',
       note: noteInput.trim() || 'Risolto',
-      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedAt: todayIso(),
       originalTitle: notifTitle,
     };
     onUpdateProfile({
@@ -197,7 +208,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       status: 'postponed',
       note: noteInput.trim() || `Rimandata al ${postponeDateInput}`,
       postponedUntilDate: postponeDateInput,
-      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedAt: todayIso(),
       originalTitle: notifTitle,
     };
     onUpdateProfile({
@@ -273,7 +284,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
       });
     } else {
       const customItem: CustomCriticalDeadline = {
-        id: `custom-dl-${Date.now()}`,
+        id: newId('custom-dl'),
         title: manualTitle.trim(),
         description:
           manualDesc.trim() ||
@@ -340,6 +351,9 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
     (n) => n.category === 'bandi_scadenze'
   ).length;
   const manualDeadlinesCount = notifications.filter((n) => n.isCustomDeadline).length;
+  const staffThresholdAlertsCount = notifications.filter(
+    (n) => n.category === 'staff_soglie'
+  ).length;
   const unpaidBookings = bookings.filter(
     (b) => b.confirmed && !b.isBalancePaid && b.balanceAmount > 0
   );
@@ -560,6 +574,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             { id: 'email_non_inviate', label: `Email da Inviare (${unsentEmailsCount})` },
             { id: 'tessere', label: 'Tessere & Assicurazioni' },
             { id: 'pagamenti', label: 'Saldi & Caparre' },
+            {
+              id: 'staff_soglie',
+              label: `Soglie Collaboratori (${staffThresholdAlertsCount})`,
+            },
             {
               id: 'RESOLVED_ARCHIVE',
               label: `Risolte & Rimandate (${resolvedOrPostponedList.length})`,
@@ -829,6 +847,16 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                         </button>
                       )}
 
+                      {notif.targetType === 'staff' && (
+                        <button
+                          onClick={() => onNavigateTab('staff')}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-900 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors border border-amber-200"
+                        >
+                          <span>{notif.actionLabel || 'Apri Collaboratori'}</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+
                       {notif.targetType === 'custom_deadline' && notif.targetId && (
                         <div className="flex items-center gap-1.5">
                           <button
@@ -933,7 +961,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
                                   onClick={() => {
                                     const d = new Date();
                                     d.setDate(d.getDate() + q.days);
-                                    setPostponeDateInput(d.toISOString().slice(0, 10));
+                                    setPostponeDateInput(todayIso(d));
                                   }}
                                   className="px-2 py-1 rounded bg-white border border-slate-300 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
                                 >

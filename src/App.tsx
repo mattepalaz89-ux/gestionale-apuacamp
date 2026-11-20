@@ -1,33 +1,86 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Sidebar, NavTab } from './components/Sidebar';
 import { Header, DriveLiveSyncState } from './components/Header';
-import { DashboardView } from './components/DashboardView';
-import { CashFlowView } from './components/CashFlowView';
-import { MembersView } from './components/MembersView';
-import { CardsView } from './components/CardsView';
-import { EventsView } from './components/EventsView';
-import { GadgetsView } from './components/GadgetsView';
-import { StaffView } from './components/StaffView';
-import { GovernanceView } from './components/GovernanceView';
-import { GrantsView } from './components/GrantsView';
-import { NotificationsView } from './components/NotificationsView';
-import { BackupView } from './components/BackupView';
-import { ReceiptConfigView } from './components/ReceiptConfigView';
-import { ReceiptModal } from './components/ReceiptModal';
-import { DigitalMemberCardModal } from './components/DigitalMemberCardModal';
 import { PageGuideBanner } from './components/PageGuideBanner';
 import { DuplicateTransactionsModal } from './components/DuplicateTransactionsModal';
+import { SyncConflictModal } from './components/SyncConflictModal';
+import { OnboardingWizardModal } from './components/OnboardingWizardModal';
+import { LegalPagesView, LegalPageType } from './components/LegalPagesModal';
+
+const DashboardView = lazy(() =>
+  import('./components/DashboardView').then((m) => ({ default: m.DashboardView }))
+);
+const CashFlowView = lazy(() =>
+  import('./components/CashFlowView').then((m) => ({ default: m.CashFlowView }))
+);
+const MembersView = lazy(() =>
+  import('./components/MembersView').then((m) => ({ default: m.MembersView }))
+);
+const CardsView = lazy(() =>
+  import('./components/CardsView').then((m) => ({ default: m.CardsView }))
+);
+const EventsView = lazy(() =>
+  import('./components/EventsView').then((m) => ({ default: m.EventsView }))
+);
+const GadgetsView = lazy(() =>
+  import('./components/GadgetsView').then((m) => ({ default: m.GadgetsView }))
+);
+const StaffView = lazy(() =>
+  import('./components/StaffView').then((m) => ({ default: m.StaffView }))
+);
+const GovernanceView = lazy(() =>
+  import('./components/GovernanceView').then((m) => ({ default: m.GovernanceView }))
+);
+const GrantsView = lazy(() =>
+  import('./components/GrantsView').then((m) => ({ default: m.GrantsView }))
+);
+const NotificationsView = lazy(() =>
+  import('./components/NotificationsView').then((m) => ({ default: m.NotificationsView }))
+);
+const BackupView = lazy(() =>
+  import('./components/BackupView').then((m) => ({ default: m.BackupView }))
+);
+const ReceiptConfigView = lazy(() =>
+  import('./components/ReceiptConfigView').then((m) => ({ default: m.ReceiptConfigView }))
+);
+const ReceiptModal = lazy(() =>
+  import('./components/ReceiptModal').then((m) => ({ default: m.ReceiptModal }))
+);
+const DigitalMemberCardModal = lazy(() =>
+  import('./components/DigitalMemberCardModal').then((m) => ({
+    default: m.DigitalMemberCardModal,
+  }))
+);
+
 import {
   loadAppState,
   saveAppState,
   resetToEmpty2027,
   archiveFiscalYearState,
   exportBackupJSON,
+  serializeAppStateCompact,
   parseBackupJSON,
   countAppStateRecords,
+  hydrateAppState,
+  bumpStateVersion,
+  deriveAssociationId,
   AppState,
 } from './utils/storage';
+import {
+  loadLocalSnapshotRecord,
+  saveLocalSnapshot,
+  updateLastSyncedVersion,
+  getLastDailyBackupDate,
+  setLastDailyBackupDate,
+  migrateLegacyLocalStorageSnapshots,
+  clearLocalAccountData,
+} from './utils/localDb';
+import { anonymizeArchivedHealthData } from './utils/sanitize';
+import { decideSyncAction } from './utils/syncOrder';
+import { createSaveQueue, SaveQueue } from './utils/saveQueue';
+import { newId } from './utils/ids';
+import { todayIso } from './utils/dates';
 import {
   isFileSystemAccessSupported,
   openLocalDatabaseFileWithPicker,
@@ -49,6 +102,9 @@ import {
   GrantItem,
   ArchivedFiscalYear,
   RecurringExpensePlan,
+  DriveDbCandidate,
+  DriveBackupReason,
+  IssuedReceipt,
 } from './types';
 import { exportAccountingToExcel } from './utils/export';
 import { calculateCashTotals, formatEuro } from './utils/finance';
@@ -66,9 +122,26 @@ import {
   googleSignIn,
   logout,
   loadLiveDatabaseFromDrive,
+  loadLiveDatabaseFileById,
   saveLiveDatabaseToDrive,
   ensureGestionaleDriveStructure,
+  createDriveBackupSnapshot,
 } from './services/googleWorkspace';
+
+function detectLegalRouteFromLocation(): LegalPageType | null {
+  if (typeof window === 'undefined') return null;
+  const path = (window.location.pathname || '').toLowerCase().replace(/\/+$/, '');
+  const hash = (window.location.hash || '').toLowerCase();
+  const params = new URLSearchParams(window.location.search || '');
+  const pageParam = (params.get('page') || '').toLowerCase();
+  if (path === '/privacy' || hash === '#/privacy' || hash === '#privacy' || pageParam === 'privacy') {
+    return 'privacy';
+  }
+  if (path === '/termini' || hash === '#/termini' || hash === '#termini' || pageParam === 'termini') {
+    return 'termini';
+  }
+  return null;
+}
 
 export default function App() {
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
@@ -80,6 +153,23 @@ export default function App() {
   const [isDuplicatesModalOpen, setIsDuplicatesModalOpen] = useState<boolean>(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
   const [driveAuthExpiredNotice, setDriveAuthExpiredNotice] = useState<boolean>(false);
+  const [isOnboardingWizardOpen, setIsOnboardingWizardOpen] = useState<boolean>(false);
+  const [standaloneLegalRoute, setStandaloneLegalRoute] = useState<LegalPageType | null>(() =>
+    detectLegalRouteFromLocation()
+  );
+  const [modalLegalPage, setModalLegalPage] = useState<LegalPageType | null>(null);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setStandaloneLegalRoute(detectLegalRouteFromLocation());
+    };
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('hashchange', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('hashchange', handlePopState);
+    };
+  }, []);
   // IDs of transactions to check for duplicates (empty on normal app startup; populated only on initial import or when a new movement is added)
   const [targetDuplicateTxIds, setTargetDuplicateTxIds] = useState<string[]>([]);
   const hasUnsavedPreLoginEditsRef = useRef<boolean>(false);
@@ -105,7 +195,10 @@ export default function App() {
   const liveDriveFileIdRef = useRef<string | undefined>(undefined);
   const isHydratingFromDriveRef = useRef<boolean>(false);
   const lastSavedJsonRef = useRef<string>('');
-  const initialDefaultJsonRef = useRef<string>(exportBackupJSON(appState));
+  const initialDefaultJsonRef = useRef<string>('');
+  if (!initialDefaultJsonRef.current) {
+    initialDefaultJsonRef.current = serializeAppStateCompact(appState);
+  }
 
   // Receipt Modal State
   const [receiptModal, setReceiptModal] = useState<{
@@ -114,6 +207,8 @@ export default function App() {
     booking?: EventBooking;
     transaction?: CashTransaction;
     gadgetOrder?: GadgetOrder;
+    existingReceipt?: IssuedReceipt | null;
+    initialOpenGmailPanel?: boolean;
   }>({
     isOpen: false,
   });
@@ -127,15 +222,60 @@ export default function App() {
     member: null,
   });
 
-  // Push current state to Google Drive immediately
+  // Sync Conflict & Multiple DB Candidates Modal State (Phase 1.2 & 1.1)
+  const [syncConflictModal, setSyncConflictModal] = useState<{
+    isOpen: boolean;
+    remoteState: AppState | null;
+    candidates?: DriveDbCandidate[];
+    selectedCandidateId?: string;
+    isResolving?: boolean;
+  }>({
+    isOpen: false,
+    remoteState: null,
+  });
+
+  const googleUserEmailRef = useRef<string | null>(googleUserEmail);
+  googleUserEmailRef.current = googleUserEmail;
+
+  // Migrate legacy localStorage keys once on app mount and purge SNAPSHOT_KEY_LATEST
+  useEffect(() => {
+    void migrateLegacyLocalStorageSnapshots(hydrateAppState);
+  }, []);
+
+  // Helper to strip volatile version/timestamp fields when comparing whether actual business data changed
+  const getBusinessPayloadSignature = useCallback((state: AppState): string => {
+    const { version: _v, updatedAt: _u, updatedBy: _b, ...businessData } = state;
+    return JSON.stringify(businessData);
+  }, []);
+
+  const lastBusinessSignatureRef = useRef<string>(getBusinessPayloadSignature(appState));
+
+  // Helper to trigger a background automatic backup on Google Drive before destructive operations
+  const triggerPreActionDriveBackup = useCallback(
+    (reason: DriveBackupReason) => {
+      if (!googleUserEmailRef.current) return;
+      void createDriveBackupSnapshot(appStateRef.current, reason).catch((err) => {
+        console.warn(`Pre-action Drive backup (${reason}) skipped:`, err);
+      });
+    },
+    []
+  );
+
+  // Push current state to Google Drive immediately (and trigger daily automatic backup if not yet done today)
   const pushStateToGoogleDriveNow = useCallback(async (stateToPush: AppState, email: string) => {
-    const jsonStr = exportBackupJSON(stateToPush);
+    const jsonStr = serializeAppStateCompact(stateToPush);
+    const assocId = deriveAssociationId(stateToPush.profile);
     setDriveSyncState('saving');
     try {
-      const uploaded = await saveLiveDatabaseToDrive(jsonStr, liveDriveFileIdRef.current);
+      const uploaded = await saveLiveDatabaseToDrive(
+        jsonStr,
+        liveDriveFileIdRef.current,
+        { associationId: assocId }
+      );
       liveDriveFileIdRef.current = uploaded.id;
       lastSavedJsonRef.current = jsonStr;
-      saveAppState(stateToPush, email);
+      await saveLocalSnapshot(email, stateToPush, stateToPush.version || 1);
+      await updateLastSyncedVersion(email, stateToPush.version || 1);
       setDriveAuthExpiredNotice(false);
       setLastDriveSavedAt(
         new Date().toLocaleTimeString('it-IT', {
@@ -145,83 +285,305 @@ export default function App() {
         })
       );
       setDriveSyncState('saved');
+
+      // Phase 1.6: Automatic daily backup (once per calendar day on first save)
+      const todayIsoDate = todayIso();
+      const lastDaily = await getLastDailyBackupDate(email);
+      if (lastDaily !== todayIsoDate && countAppStateRecords(stateToPush) > 0) {
+        await setLastDailyBackupDate(email, todayIsoDate);
+        void createDriveBackupSnapshot(stateToPush, 'daily').catch(() => {});
+      }
     } catch (err: any) {
       if (err?.message === 'AUTH_REQUIRED') {
         setDriveAuthExpiredNotice(true);
       }
       console.warn('Google Drive save notice:', err);
       setDriveSyncState('error');
+      throw err;
     }
   }, []);
 
+  // Debounced, serialized SaveQueue instance (Phase 1.4)
+  const driveSaveQueueRef = useRef<SaveQueue<AppState> | null>(null);
+  if (!driveSaveQueueRef.current) {
+    driveSaveQueueRef.current = createSaveQueue<AppState>(
+      async (snapshotToSave) => {
+        const email = googleUserEmailRef.current;
+        if (!email) return;
+        await pushStateToGoogleDriveNow(snapshotToSave, email);
+      },
+      2000
+    );
+  }
+
+  // Flush pending Drive saves when tab becomes hidden or before unload
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        void driveSaveQueueRef.current?.flush();
+      }
+    };
+    const handleBeforeUnload = () => {
+      void driveSaveQueueRef.current?.flush();
+    };
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
+  // Apply remote state cleanly into memory & IndexedDB without triggering a save loop
+  const applyRemoteStateLocally = useCallback(
+    async (remoteState: AppState, email: string, modifiedTime?: string) => {
+      isHydratingFromDriveRef.current = true;
+      const jsonStr = serializeAppStateCompact(remoteState);
+      lastSavedJsonRef.current = jsonStr;
+      lastBusinessSignatureRef.current = getBusinessPayloadSignature(remoteState);
+      setAppState(remoteState);
+      await saveLocalSnapshot(email, remoteState, remoteState.version || 1);
+      setDriveAuthExpiredNotice(false);
+      const timeStr = modifiedTime
+        ? new Date(modifiedTime).toLocaleTimeString('it-IT', {
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : new Date().toLocaleTimeString('it-IT', {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+      setLastDriveSavedAt(timeStr);
+      setDriveSyncState('saved');
+      setTimeout(() => {
+        isHydratingFromDriveRef.current = false;
+      }, 300);
+    },
+    [getBusinessPayloadSignature]
+  );
+
   // Pull latest state from the connected account's Google Drive ("database_gestionale_asd.json")
-  const pullStateFromGoogleDrive = useCallback(async (email: string) => {
-    setDriveSyncState('loading');
-    try {
-      // Ensure the "Gestionale ASD" folder structure exists on Drive
-      ensureGestionaleDriveStructure().catch(() => {});
+  // using optimistic concurrency (decideSyncAction) and per-account IndexedDB snapshot
+  const pullStateFromGoogleDrive = useCallback(
+    async (email: string) => {
+      setDriveSyncState('loading');
+      try {
+        // Ensure the "Gestionale ASD" folder structure exists on Drive (serialized under module lock)
+        ensureGestionaleDriveStructure().catch(() => {});
 
-      const localCurrent = appStateRef.current;
-      const localCount = countAppStateRecords(localCurrent);
+        const idbRecord = await loadLocalSnapshotRecord(email);
+        const inMemoryState = appStateRef.current;
 
-      const remoteDb = await loadLiveDatabaseFromDrive();
-      if (remoteDb && remoteDb.content) {
-        const parsed = parseBackupJSON(remoteDb.content);
-        if (parsed) {
-          const remoteCount = countAppStateRecords(parsed);
-          liveDriveFileIdRef.current = remoteDb.fileId || undefined;
+        // Determine effective local state for this account
+        let localCandidate: AppState | null = null;
+        if (
+          hasUnsavedPreLoginEditsRef.current &&
+          countAppStateRecords(inMemoryState) > 0
+        ) {
+          localCandidate = inMemoryState;
+        } else if (idbRecord?.state) {
+          localCandidate = idbRecord.state;
+        }
 
-          // Safety Protection: Never overwrite non-empty local data with an empty remote DB file,
-          // and preserve pre-login edits if the user just imported data before connecting Drive
-          if (
-            (remoteCount === 0 && localCount > 0) ||
-            (hasUnsavedPreLoginEditsRef.current && localCount > remoteCount)
-          ) {
-            await pushStateToGoogleDriveNow(localCurrent, email);
-            return;
-          }
+        const remoteDb = await loadLiveDatabaseFromDrive({
+          knownRootFolderId:
+            localCandidate?.profile?.driveRootFolderId ||
+            inMemoryState.profile?.driveRootFolderId,
+          associationId: deriveAssociationId(
+            localCandidate?.profile || inMemoryState.profile
+          ),
+        });
 
-          isHydratingFromDriveRef.current = true;
-          lastSavedJsonRef.current = exportBackupJSON(parsed);
-          setAppState(parsed);
-          saveAppState(parsed, email);
-          setDriveAuthExpiredNotice(false);
-          const timeStr = remoteDb.modifiedTime
-            ? new Date(remoteDb.modifiedTime).toLocaleTimeString('it-IT', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })
-            : new Date().toLocaleTimeString('it-IT', {
-                hour: '2-digit',
-                minute: '2-digit',
-              });
-          setLastDriveSavedAt(timeStr);
-          setDriveSyncState('saved');
-          setTimeout(() => {
-            isHydratingFromDriveRef.current = false;
-          }, 300);
+        const remoteState =
+          remoteDb && remoteDb.content ? parseBackupJSON(remoteDb.content) : null;
+
+        if (remoteDb?.fileId) {
+          liveDriveFileIdRef.current = remoteDb.fileId;
+        }
+
+        // If multiple database_gestionale_asd.json files were found on Drive, let user inspect/confirm
+        if (remoteDb?.candidates && remoteDb.candidates.length > 1 && remoteState) {
+          setSyncConflictModal({
+            isOpen: true,
+            remoteState,
+            candidates: remoteDb.candidates,
+            selectedCandidateId: remoteDb.fileId,
+          });
+          setDriveSyncState('idle');
           return;
         }
-      }
 
-      // If no live DB file exists yet on this Drive, create it immediately from the current in-memory state (or cached profile state if richer)
-      const cachedScoped = loadAppState(email);
-      const stateToUpload =
-        countAppStateRecords(localCurrent) >= countAppStateRecords(cachedScoped)
-          ? localCurrent
-          : cachedScoped;
-      if (stateToUpload !== localCurrent) {
-        setAppState(stateToUpload);
+        const localCount = countAppStateRecords(localCandidate);
+        const remoteCount = countAppStateRecords(remoteState);
+
+        // Safety fast-paths when one side is completely empty (0 records) and the other has data
+        if (remoteState && remoteCount > 0 && localCount === 0) {
+          await applyRemoteStateLocally(remoteState, email, remoteDb?.modifiedTime);
+          return;
+        }
+        if (localCandidate && localCount > 0 && (!remoteState || remoteCount === 0)) {
+          if (localCandidate !== inMemoryState) {
+            isHydratingFromDriveRef.current = true;
+            lastBusinessSignatureRef.current = getBusinessPayloadSignature(localCandidate);
+            setAppState(localCandidate);
+            setTimeout(() => {
+              isHydratingFromDriveRef.current = false;
+            }, 250);
+          }
+          await pushStateToGoogleDriveNow(localCandidate, email);
+          return;
+        }
+
+        const decision = decideSyncAction(
+          localCandidate,
+          remoteState,
+          idbRecord?.lastSyncedVersion ?? null
+        );
+
+        if (decision === 'use-remote' && remoteState) {
+          await applyRemoteStateLocally(remoteState, email, remoteDb?.modifiedTime);
+          return;
+        }
+
+        if (decision === 'push-local') {
+          const stateToUpload = localCandidate || inMemoryState;
+          if (stateToUpload !== inMemoryState) {
+            isHydratingFromDriveRef.current = true;
+            lastBusinessSignatureRef.current = getBusinessPayloadSignature(stateToUpload);
+            setAppState(stateToUpload);
+            setTimeout(() => {
+              isHydratingFromDriveRef.current = false;
+            }, 250);
+          }
+          await pushStateToGoogleDriveNow(stateToUpload, email);
+          return;
+        }
+
+        if (decision === 'noop') {
+          const syncedState = remoteState || localCandidate || inMemoryState;
+          await applyRemoteStateLocally(syncedState, email, remoteDb?.modifiedTime);
+          if (
+            remoteCount === 0 &&
+            localCount === 0 &&
+            !syncedState.profile?.onboardingCompleted
+          ) {
+            setIsOnboardingWizardOpen(true);
+          }
+          return;
+        }
+
+        // decision === 'conflict' -> Pause auto-save and show explicit conflict resolution dialog
+        if (remoteState && localCandidate) {
+          if (localCandidate !== inMemoryState) {
+            isHydratingFromDriveRef.current = true;
+            lastBusinessSignatureRef.current = getBusinessPayloadSignature(localCandidate);
+            setAppState(localCandidate);
+            setTimeout(() => {
+              isHydratingFromDriveRef.current = false;
+            }, 250);
+          }
+          setSyncConflictModal({
+            isOpen: true,
+            remoteState,
+            candidates: remoteDb?.candidates,
+            selectedCandidateId: remoteDb?.fileId,
+          });
+          setDriveSyncState('idle');
+          return;
+        }
+      } catch (err: any) {
+        if (err?.message === 'AUTH_REQUIRED') {
+          setDriveAuthExpiredNotice(true);
+        }
+        console.warn('Background Drive sync notice:', err);
+        setDriveSyncState('error');
       }
-      await pushStateToGoogleDriveNow(stateToUpload, email);
-    } catch (err: any) {
-      if (err?.message === 'AUTH_REQUIRED') {
-        setDriveAuthExpiredNotice(true);
-      }
-      console.warn('Background Drive sync notice:', err);
-      setDriveSyncState('error');
+    },
+    [applyRemoteStateLocally, getBusinessPayloadSignature, pushStateToGoogleDriveNow]
+  );
+
+  // Handlers for SyncConflictModal (Phase 1.2)
+  const handleResolveConflictUseRemote = useCallback(async () => {
+    const email = googleUserEmailRef.current;
+    const remoteState = syncConflictModal.remoteState;
+    if (!remoteState || !email) {
+      setSyncConflictModal({ isOpen: false, remoteState: null });
+      return;
     }
-  }, [pushStateToGoogleDriveNow]);
+    setSyncConflictModal((prev) => ({ ...prev, isResolving: true }));
+    try {
+      // Save local state as a pre-overwrite backup on Drive before replacing it with remote
+      if (countAppStateRecords(appStateRef.current) > 0) {
+        await createDriveBackupSnapshot(appStateRef.current, 'pre-overwrite').catch(() => {});
+      }
+      await applyRemoteStateLocally(remoteState, email);
+      setSyncConflictModal({ isOpen: false, remoteState: null });
+    } finally {
+      setSyncConflictModal((prev) => ({ ...prev, isResolving: false }));
+    }
+  }, [applyRemoteStateLocally, syncConflictModal.remoteState]);
+
+  const handleResolveConflictPushLocal = useCallback(async () => {
+    const email = googleUserEmailRef.current;
+    const remoteState = syncConflictModal.remoteState;
+    if (!email) {
+      setSyncConflictModal({ isOpen: false, remoteState: null });
+      return;
+    }
+    setSyncConflictModal((prev) => ({ ...prev, isResolving: true }));
+    try {
+      // Save remote state as a pre-overwrite backup on Drive before overwriting it with local
+      if (remoteState && countAppStateRecords(remoteState) > 0) {
+        await createDriveBackupSnapshot(remoteState, 'pre-overwrite').catch(() => {});
+      }
+      const currentLocal = appStateRef.current;
+      const nextVersion =
+        Math.max(currentLocal.version || 1, remoteState?.version || 1) + 1;
+      const bumpedLocal: AppState = {
+        ...currentLocal,
+        version: nextVersion,
+        updatedAt: new Date().toISOString(),
+        updatedBy: email,
+      };
+      isHydratingFromDriveRef.current = true;
+      lastBusinessSignatureRef.current = getBusinessPayloadSignature(bumpedLocal);
+      setAppState(bumpedLocal);
+      setTimeout(() => {
+        isHydratingFromDriveRef.current = false;
+      }, 250);
+      await pushStateToGoogleDriveNow(bumpedLocal, email);
+      setSyncConflictModal({ isOpen: false, remoteState: null });
+    } finally {
+      setSyncConflictModal((prev) => ({ ...prev, isResolving: false }));
+    }
+  }, [getBusinessPayloadSignature, pushStateToGoogleDriveNow, syncConflictModal.remoteState]);
+
+  const handleSelectDriveCandidate = useCallback(
+    async (fileId: string) => {
+      setSyncConflictModal((prev) => ({ ...prev, isResolving: true }));
+      try {
+        const assocId = deriveAssociationId(appStateRef.current.profile);
+        const loaded = await loadLiveDatabaseFileById(fileId, assocId);
+        if (loaded && loaded.content) {
+          const parsed = parseBackupJSON(loaded.content);
+          if (parsed) {
+            liveDriveFileIdRef.current = fileId;
+            setSyncConflictModal((prev) => ({
+              ...prev,
+              remoteState: parsed,
+              selectedCandidateId: fileId,
+              isResolving: false,
+            }));
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Errore caricamento candidato Drive:', err);
+      }
+      setSyncConflictModal((prev) => ({ ...prev, isResolving: false }));
+    },
+    []
+  );
 
   // Initialize Google Workspace Auth listener
   useEffect(() => {
@@ -244,31 +606,43 @@ export default function App() {
   // When the connected Google profile changes, sync with that Google account's Drive ("Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json")
   useEffect(() => {
     if (googleUserEmail) {
-      if (!hasUnsavedPreLoginEditsRef.current) {
-        const profileScopedState = loadAppState(googleUserEmail);
-        if (countAppStateRecords(profileScopedState) > countAppStateRecords(appStateRef.current)) {
-          setAppState(profileScopedState);
-        }
-      }
       pullStateFromGoogleDrive(googleUserEmail).then(() => {
         hasUnsavedPreLoginEditsRef.current = false;
       });
     }
   }, [googleUserEmail, pullStateFromGoogleDrive]);
 
-  // Auto-save in real time on every change to Local Browser Cache, Local PC File, and Google Drive
+  // Auto-save in real time on every change to Local IndexedDB, Local PC File, and Google Drive (via SaveQueue)
   useEffect(() => {
-    saveAppState(appState, googleUserEmail);
+    if (isHydratingFromDriveRef.current || syncConflictModal.isOpen) return;
 
-    const currentJson = exportBackupJSON(appState);
-    if (!googleUserEmail && currentJson !== initialDefaultJsonRef.current) {
+    const currentSignature = getBusinessPayloadSignature(appState);
+    const hasBusinessDataChanged = currentSignature !== lastBusinessSignatureRef.current;
+
+    // If business data changed, bump version + updatedAt + updatedBy
+    let effectiveState = appState;
+    if (hasBusinessDataChanged) {
+      lastBusinessSignatureRef.current = currentSignature;
+      effectiveState = bumpStateVersion(appState, googleUserEmail);
+      isHydratingFromDriveRef.current = true;
+      setAppState(effectiveState);
+      setTimeout(() => {
+        isHydratingFromDriveRef.current = false;
+      }, 0);
+    }
+
+    const currentCompactJson = serializeAppStateCompact(effectiveState);
+    if (!googleUserEmail && currentCompactJson !== initialDefaultJsonRef.current) {
       hasUnsavedPreLoginEditsRef.current = true;
     }
 
-    // If a local PC file handle is connected via File System Access API, write to it automatically
+    // Persist account-scoped snapshot in IndexedDB
+    saveAppState(effectiveState, googleUserEmail || 'local');
+
+    // If a local PC file handle is connected via File System Access API, write indented JSON to it
     if (localFileHandleRef.current) {
       const handle = localFileHandleRef.current;
-      writeToLocalFileHandle(handle, currentJson)
+      writeToLocalFileHandle(handle, exportBackupJSON(effectiveState))
         .then(() => {
           setLastLocalSavedAt(
             new Date().toLocaleTimeString('it-IT', {
@@ -282,52 +656,30 @@ export default function App() {
         });
     }
 
-    if (!googleUserEmail || isHydratingFromDriveRef.current) return;
-    if (currentJson === lastSavedJsonRef.current) return;
+    if (!googleUserEmail) return;
+    if (currentCompactJson === lastSavedJsonRef.current) return;
 
-    const timer = setTimeout(async () => {
-      setDriveSyncState('saving');
-      try {
-        const uploaded = await saveLiveDatabaseToDrive(
-          currentJson,
-          liveDriveFileIdRef.current
-        );
-        liveDriveFileIdRef.current = uploaded.id;
-        lastSavedJsonRef.current = currentJson;
-        setDriveAuthExpiredNotice(false);
-        setLastDriveSavedAt(
-          new Date().toLocaleTimeString('it-IT', {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-          })
-        );
-        setDriveSyncState('saved');
-      } catch (err: any) {
-        if (err?.message === 'AUTH_REQUIRED') {
-          setDriveAuthExpiredNotice(true);
-        }
-        console.error('Live Drive auto-save error:', err);
-        setDriveSyncState('error');
-      }
-    }, 800);
+    // Enqueue into the serialized 2000ms debounced Drive save queue
+    driveSaveQueueRef.current?.enqueue(effectiveState);
+  }, [appState, googleUserEmail, getBusinessPayloadSignature, syncConflictModal.isOpen]);
 
-    return () => clearTimeout(timer);
-  }, [appState, googleUserEmail]);
-
-  // Periodic Automatic Google Drive Sync Timer (every 90 seconds) to ensure Drive folder & database file are always aligned
+  // Periodic Automatic Google Drive Sync Timer (every 90 seconds) to ensure any pending state is flushed
   useEffect(() => {
     if (!googleUserEmail) return;
     const interval = setInterval(async () => {
-      if (isHydratingFromDriveRef.current) return;
+      if (isHydratingFromDriveRef.current || syncConflictModal.isOpen) return;
+      if (driveSaveQueueRef.current?.getStatus() === 'pending') {
+        await driveSaveQueueRef.current.flush();
+        return;
+      }
       const currentState = appStateRef.current;
-      const currentJson = exportBackupJSON(currentState);
-      if (currentJson !== lastSavedJsonRef.current || !liveDriveFileIdRef.current) {
-        await pushStateToGoogleDriveNow(currentState, googleUserEmail);
+      const currentCompactJson = serializeAppStateCompact(currentState);
+      if (currentCompactJson !== lastSavedJsonRef.current || !liveDriveFileIdRef.current) {
+        driveSaveQueueRef.current?.enqueue(currentState);
       }
     }, 90_000);
     return () => clearInterval(interval);
-  }, [googleUserEmail, pushStateToGoogleDriveNow]);
+  }, [googleUserEmail, syncConflictModal.isOpen]);
 
   // Connect / Open a Local PC .json File (OneDrive / Dropbox / Hard Disk)
   const handleConnectLocalFile = async () => {
@@ -413,6 +765,8 @@ export default function App() {
     );
   };
 
+  const [isLogoutModalOpen, setIsLogoutModalOpen] = useState<boolean>(false);
+
   const handleGoogleSignIn = async (forceConsent: boolean = false) => {
     try {
       const res = await googleSignIn(Boolean(forceConsent));
@@ -426,11 +780,40 @@ export default function App() {
   };
 
   const handleGoogleLogout = async () => {
+    setIsLogoutModalOpen(true);
+  };
+
+  const confirmGoogleLogout = async (wipeLocalData: boolean) => {
+    const emailToClear = googleUserEmail;
+    setIsLogoutModalOpen(false);
+    try {
+      await driveSaveQueueRef.current?.flush();
+    } catch {
+      // ignore flush errors on logout
+    }
     await logout();
     setGoogleUserEmail(null);
     setDriveSyncState('idle');
     setLastDriveSavedAt(null);
     liveDriveFileIdRef.current = undefined;
+
+    if (wipeLocalData) {
+      await clearLocalAccountData(emailToClear);
+      const cleanState = resetToEmpty2027(null);
+      isHydratingFromDriveRef.current = true;
+      appStateRef.current = cleanState;
+      lastBusinessSignatureRef.current = getBusinessPayloadSignature(cleanState);
+      lastSavedJsonRef.current = '';
+      undoStackRef.current = [];
+      redoStackRef.current = [];
+      setUndoStack([]);
+      setRedoStack([]);
+      setTargetDuplicateTxIds([]);
+      setAppState(cleanState);
+      setTimeout(() => {
+        isHydratingFromDriveRef.current = false;
+      }, 200);
+    }
   };
 
   // Derived financial summary
@@ -438,7 +821,13 @@ export default function App() {
     appState.transactions,
     appState.initialFund,
     appState.initialFundBank,
-    appState.initialFundCash
+    appState.initialFundCash,
+    {
+      initialPaypal: appState.profile.initialFundPaypal || 0,
+      paymentAccounts: appState.profile.paymentAccounts,
+      paypalExpenseSourceAccount: appState.profile.paypalExpenseSourceAccount,
+      customPaymentAccounts: appState.profile.customPaymentAccounts,
+    }
   );
 
   // Detect potential duplicate movements ONLY for newly imported or newly added transactions (targetDuplicateTxIds)
@@ -469,57 +858,124 @@ export default function App() {
     [duplicateGroups]
   );
 
-  // System notifications across all modules (filtered by user-resolved or postponed notifications, including manual deadlines)
-  // Pass transactions for duplicate notifications ONLY when targetDuplicateTxIds is active
-  const notifications = generateSystemNotifications(
-    appState.members,
-    appState.bookings,
-    appState.events,
-    appState.gadgetOrders,
-    appState.roles,
-    appState.assemblies,
-    new Date(),
-    appState.grants,
-    targetDuplicateTxIds.length > 0 ? appState.transactions : [],
-    ignoredDuplicateSignatures,
-    appState.profile.notificationResolutions,
-    appState.profile.customDeadlines || [],
-    appState.profile.completedDeadlineIds || [],
-    duplicateDetectionMode
+  // Phase 6.2: Reference date tick updated once per minute so notifications are memoized across unrelated renders
+  const [notifMinuteTick, setNotifMinuteTick] = useState<number>(() =>
+    Math.floor(Date.now() / 60_000)
+  );
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNotifMinuteTick(Math.floor(Date.now() / 60_000));
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // System notifications across all modules (memoized, filtered by user-resolved or postponed notifications)
+  const notifications = useMemo(
+    () =>
+      generateSystemNotifications(
+        appState.members,
+        appState.bookings,
+        appState.events,
+        appState.gadgetOrders,
+        appState.roles,
+        appState.assemblies,
+        new Date(notifMinuteTick * 60_000),
+        appState.grants,
+        targetDuplicateTxIds.length > 0 ? appState.transactions : [],
+        ignoredDuplicateSignatures,
+        appState.profile.notificationResolutions,
+        appState.profile.customDeadlines || [],
+        appState.profile.completedDeadlineIds || [],
+        duplicateDetectionMode,
+        appState.staff,
+        appState.profile.activeYear,
+        appState.profile.staffThresholds
+      ),
+    [
+      appState.members,
+      appState.bookings,
+      appState.events,
+      appState.gadgetOrders,
+      appState.roles,
+      appState.assemblies,
+      notifMinuteTick,
+      appState.grants,
+      targetDuplicateTxIds.length,
+      appState.transactions,
+      ignoredDuplicateSignatures,
+      appState.profile.notificationResolutions,
+      appState.profile.customDeadlines,
+      appState.profile.completedDeadlineIds,
+      duplicateDetectionMode,
+      appState.staff,
+      appState.profile.activeYear,
+      appState.profile.staffThresholds,
+    ]
   );
 
-  // --- Multi-Step Undo / Redo History Stack (up to 30 operations) ---
+  // --- Multi-Step Undo / Redo History Stack (up to 30 operations, Phase 2.4 pure applyAction) ---
   const [undoStack, setUndoStack] = useState<{ state: AppState; label: string }[]>([]);
   const [redoStack, setRedoStack] = useState<{ state: AppState; label: string }[]>([]);
+  const undoStackRef = useRef<{ state: AppState; label: string }[]>([]);
+  const redoStackRef = useRef<{ state: AppState; label: string }[]>([]);
+  const lastActionTimestampRef = useRef<number>(0);
 
-  const recordUndoSnapshot = useCallback((label: string, snapshotState?: AppState) => {
-    const snap = snapshotState ?? appStateRef.current;
-    setUndoStack((prev) => [{ state: snap, label }, ...prev].slice(0, 30));
-    setRedoStack([]);
+  const applyAction = useCallback((label: string, updater: (prev: AppState) => AppState) => {
+    const prev = appStateRef.current;
+    const next = updater(prev);
+    if (next === prev) return;
+
+    const now = Date.now();
+    // Coalesce sub-actions fired synchronously within the same UI click (<50ms) into a single atomic Undo entry
+    const isCompositeSubAction = now - lastActionTimestampRef.current < 50;
+    lastActionTimestampRef.current = now;
+
+    if (!isCompositeSubAction) {
+      const nextUndo = [{ state: prev, label }, ...undoStackRef.current].slice(0, 30);
+      undoStackRef.current = nextUndo;
+      setUndoStack(nextUndo);
+      redoStackRef.current = [];
+      setRedoStack([]);
+    }
+
+    appStateRef.current = next;
+    setAppState(next);
   }, []);
 
   const handleUndo = useCallback(() => {
-    setUndoStack((prevUndo) => {
-      if (prevUndo.length === 0) return prevUndo;
-      const [latest, ...rest] = prevUndo;
-      const currentSnap = appStateRef.current;
-      setRedoStack((prevRedo) => [{ state: currentSnap, label: latest.label }, ...prevRedo].slice(0, 30));
-      setTargetDuplicateTxIds([]);
-      setAppState(latest.state);
-      return rest;
-    });
+    const currentUndo = undoStackRef.current;
+    if (currentUndo.length === 0) return;
+    const [latest, ...rest] = currentUndo;
+    const currentSnap = appStateRef.current;
+    const nextRedo = [{ state: currentSnap, label: latest.label }, ...redoStackRef.current].slice(
+      0,
+      30
+    );
+    undoStackRef.current = rest;
+    redoStackRef.current = nextRedo;
+    appStateRef.current = latest.state;
+    setUndoStack(rest);
+    setRedoStack(nextRedo);
+    setTargetDuplicateTxIds([]);
+    setAppState(latest.state);
   }, []);
 
   const handleRedo = useCallback(() => {
-    setRedoStack((prevRedo) => {
-      if (prevRedo.length === 0) return prevRedo;
-      const [latest, ...rest] = prevRedo;
-      const currentSnap = appStateRef.current;
-      setUndoStack((prevUndo) => [{ state: currentSnap, label: latest.label }, ...prevUndo].slice(0, 30));
-      setTargetDuplicateTxIds([]);
-      setAppState(latest.state);
-      return rest;
-    });
+    const currentRedo = redoStackRef.current;
+    if (currentRedo.length === 0) return;
+    const [latest, ...rest] = currentRedo;
+    const currentSnap = appStateRef.current;
+    const nextUndo = [{ state: currentSnap, label: latest.label }, ...undoStackRef.current].slice(
+      0,
+      30
+    );
+    redoStackRef.current = rest;
+    undoStackRef.current = nextUndo;
+    appStateRef.current = latest.state;
+    setRedoStack(rest);
+    setUndoStack(nextUndo);
+    setTargetDuplicateTxIds([]);
+    setAppState(latest.state);
   }, []);
 
   // Global keyboard shortcuts: Ctrl+Z / Cmd+Z for Undo, Ctrl+Y / Cmd+Shift+Z for Redo
@@ -556,44 +1012,39 @@ export default function App() {
 
   // --- Handlers for Cash Transactions & Funds ---
   const handleAddTransaction = (newTx: Omit<CashTransaction, 'id'>) => {
-    recordUndoSnapshot('Aggiunta movimento cassa');
-    const id = `tx-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const id = newId('tx');
     const tx: CashTransaction = { id, ...newTx };
     // Test ONLY this newly added movement against existing movements
     setTargetDuplicateTxIds([id]);
-    setAppState((prev) => {
-      const nextTxs = [tx, ...prev.transactions];
-      const foundForNew = detectDuplicatesForNewTransactions(
-        [id],
-        nextTxs,
-        prev.members,
-        prev.staff,
-        7,
-        prev.profile.ignoredDuplicateSignatures || [],
-        prev.profile.duplicateDetectionMode || 'strict'
-      );
-      if (foundForNew.length > 0) {
-        setIsDuplicatesModalOpen(true);
-      }
-      return {
-        ...prev,
-        transactions: nextTxs,
-      };
-    });
+    applyAction('Aggiunta movimento cassa', (prev) => ({
+      ...prev,
+      transactions: [tx, ...prev.transactions],
+    }));
+    const current = appStateRef.current;
+    const foundForNew = detectDuplicatesForNewTransactions(
+      [id],
+      current.transactions,
+      current.members,
+      current.staff,
+      7,
+      current.profile.ignoredDuplicateSignatures || [],
+      current.profile.duplicateDetectionMode || 'strict'
+    );
+    if (foundForNew.length > 0) {
+      setIsDuplicatesModalOpen(true);
+    }
   };
 
   const handleUpdateTransaction = (updatedTx: CashTransaction) => {
-    recordUndoSnapshot('Modifica movimento cassa');
-    setAppState((prev) => ({
+    applyAction('Modifica movimento cassa', (prev) => ({
       ...prev,
       transactions: prev.transactions.map((t) => (t.id === updatedTx.id ? updatedTx : t)),
     }));
   };
 
   const handleDeleteTransaction = (id: string) => {
-    recordUndoSnapshot('Eliminazione movimento cassa');
     setTargetDuplicateTxIds((prev) => prev.filter((item) => item !== id));
-    setAppState((prev) => ({
+    applyAction('Eliminazione movimento cassa', (prev) => ({
       ...prev,
       transactions: prev.transactions.filter((t) => t.id !== id),
     }));
@@ -601,20 +1052,19 @@ export default function App() {
 
   const handleDeleteMultipleTransactions = (ids: string[]) => {
     if (ids.length === 0) return;
-    recordUndoSnapshot(`Eliminazione ${ids.length} movimenti`);
+    triggerPreActionDriveBackup('pre-bulk-delete');
     const idSet = new Set(ids);
     setTargetDuplicateTxIds((prev) => prev.filter((item) => !idSet.has(item)));
-    setAppState((prev) => ({
+    applyAction(`Eliminazione ${ids.length} movimenti`, (prev) => ({
       ...prev,
       transactions: prev.transactions.filter((t) => !idSet.has(t.id)),
     }));
   };
 
   const handleLoadSampleDuplicates = () => {
-    recordUndoSnapshot('Simulazione duplicati');
-    const sampleTxs = createSampleDuplicateTransactions(appState.profile.activeYear);
+    const sampleTxs = createSampleDuplicateTransactions(appStateRef.current.profile.activeYear);
     setTargetDuplicateTxIds(sampleTxs.map((t) => t.id));
-    setAppState((prev) => ({
+    applyAction('Simulazione duplicati', (prev) => ({
       ...prev,
       profile: {
         ...prev.profile,
@@ -634,40 +1084,38 @@ export default function App() {
     mode: 'append' | 'replace',
     newFunds?: { initialFund: number; initialFundBank: number; initialFundCash: number }
   ) => {
-    recordUndoSnapshot(
+    triggerPreActionDriveBackup('pre-import');
+    const label =
       txs.length === 0 && mode === 'replace'
         ? 'Azzeramento cassa'
-        : `Importazione ${txs.length} movimenti`
-    );
+        : `Importazione ${txs.length} movimenti`;
     const importedIds = txs.map((t) => t.id);
     // Run duplicate check once on the newly imported dataset
     setTargetDuplicateTxIds(importedIds);
-    setAppState((prev) => {
-      const nextTxs = mode === 'replace' ? txs : [...txs, ...prev.transactions];
-      const foundOnImport = detectDuplicatesForNewTransactions(
-        importedIds,
-        nextTxs,
-        prev.members,
-        prev.staff,
-        7,
-        prev.profile.ignoredDuplicateSignatures || [],
-        prev.profile.duplicateDetectionMode || 'strict'
-      );
-      if (foundOnImport.length > 0) {
-        setIsDuplicatesModalOpen(true);
-      }
-      return {
-        ...prev,
-        transactions: nextTxs,
-        ...(newFunds
-          ? {
-              initialFund: newFunds.initialFund,
-              initialFundBank: newFunds.initialFundBank,
-              initialFundCash: newFunds.initialFundCash,
-            }
-          : {}),
-      };
-    });
+    applyAction(label, (prev) => ({
+      ...prev,
+      transactions: mode === 'replace' ? txs : [...txs, ...prev.transactions],
+      ...(newFunds
+        ? {
+            initialFund: newFunds.initialFund,
+            initialFundBank: newFunds.initialFundBank,
+            initialFundCash: newFunds.initialFundCash,
+          }
+        : {}),
+    }));
+    const current = appStateRef.current;
+    const foundOnImport = detectDuplicatesForNewTransactions(
+      importedIds,
+      current.transactions,
+      current.members,
+      current.staff,
+      7,
+      current.profile.ignoredDuplicateSignatures || [],
+      current.profile.duplicateDetectionMode || 'strict'
+    );
+    if (foundOnImport.length > 0) {
+      setIsDuplicatesModalOpen(true);
+    }
   };
 
   const handleUpdateInitialFunds = (funds: {
@@ -675,8 +1123,7 @@ export default function App() {
     initialFundBank: number;
     initialFundCash: number;
   }) => {
-    recordUndoSnapshot('Modifica fondo iniziale');
-    setAppState((prev) => ({
+    applyAction('Modifica fondo iniziale', (prev) => ({
       ...prev,
       ...funds,
     }));
@@ -687,11 +1134,10 @@ export default function App() {
     newPlan: Omit<RecurringExpensePlan, 'id'>,
     autoGenerateCurrentYearTransactions: boolean
   ) => {
-    recordUndoSnapshot('Aggiunta spesa ricorrente');
-    const planId = `rec-${Date.now()}`;
+    const planId = newId('rec');
     const fullPlan: RecurringExpensePlan = { id: planId, ...newPlan };
 
-    setAppState((prev) => {
+    applyAction('Aggiunta spesa ricorrente', (prev) => {
       let generatedTransactions: CashTransaction[] = [];
       if (autoGenerateCurrentYearTransactions) {
         const occurrences = generateScheduledOccurrencesForPlan(
@@ -704,8 +1150,8 @@ export default function App() {
             : occurrences.filter((occ) =>
                 occ.date.startsWith(String(prev.profile.activeYear))
               );
-        generatedTransactions = filteredOccurrences.map((occ, idx) => ({
-          id: `tx-rec-${Date.now()}-${idx}`,
+        generatedTransactions = filteredOccurrences.map((occ) => ({
+          id: newId('tx-rec'),
           ...buildTransactionFromOccurrence(fullPlan, occ),
         }));
       }
@@ -719,8 +1165,7 @@ export default function App() {
   };
 
   const handleDeleteRecurringExpense = (id: string) => {
-    recordUndoSnapshot('Rimozione spesa ricorrente');
-    setAppState((prev) => ({
+    applyAction('Rimozione spesa ricorrente', (prev) => ({
       ...prev,
       recurringExpenses: (prev.recurringExpenses || []).filter((p) => p.id !== id),
     }));
@@ -729,13 +1174,11 @@ export default function App() {
   const handleRegisterRecurringOccurrences = (
     newTransactions: Omit<CashTransaction, 'id'>[]
   ) => {
-    recordUndoSnapshot(`Contabilizzazione ${newTransactions.length} rate`);
-    const now = Date.now();
-    const txsWithId: CashTransaction[] = newTransactions.map((tx, idx) => ({
-      id: `tx-rec-${now}-${idx}`,
+    const txsWithId: CashTransaction[] = newTransactions.map((tx) => ({
+      id: newId('tx-rec'),
       ...tx,
     }));
-    setAppState((prev) => ({
+    applyAction(`Contabilizzazione ${newTransactions.length} rate`, (prev) => ({
       ...prev,
       transactions: [...txsWithId, ...prev.transactions],
     }));
@@ -743,10 +1186,9 @@ export default function App() {
 
   // --- Handlers for Members ---
   const handleAddMember = (newMember: Omit<Member, 'id'>): Member => {
-    recordUndoSnapshot('Aggiunta socio');
-    const id = `m-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const id = newId('m');
     const member: Member = { id, ...newMember };
-    setAppState((prev) => ({
+    applyAction('Aggiunta socio', (prev) => ({
       ...prev,
       members: [member, ...prev.members],
     }));
@@ -754,42 +1196,48 @@ export default function App() {
   };
 
   const handleImportMembers = (imported: Member[], mode: 'append' | 'replace') => {
-    recordUndoSnapshot(`Importazione ${imported.length} soci`);
-    setAppState((prev) => ({
+    triggerPreActionDriveBackup('pre-import');
+    applyAction(`Importazione ${imported.length} soci`, (prev) => ({
       ...prev,
       members: mode === 'replace' ? imported : [...imported, ...prev.members],
     }));
   };
 
   const handleUpdateMember = (updated: Member) => {
-    recordUndoSnapshot('Modifica socio');
-    setAppState((prev) => ({
+    applyAction('Modifica socio', (prev) => ({
       ...prev,
       members: prev.members.map((m) => (m.id === updated.id ? updated : m)),
     }));
   };
 
   const handleDeleteMember = (id: string) => {
-    recordUndoSnapshot('Eliminazione socio');
-    setAppState((prev) => ({
+    // Phase 4.4: Deleting a member preserves all accounting transactions and unlinks memberId
+    applyAction('Eliminazione socio', (prev) => ({
       ...prev,
       members: prev.members.filter((m) => m.id !== id),
+      transactions: prev.transactions.map((t) =>
+        t.memberId === id ? { ...t, memberId: undefined } : t
+      ),
+      bookings: prev.bookings.map((b) =>
+        b.memberId === id ? { ...b, memberId: '' } : b
+      ),
+      gadgetOrders: prev.gadgetOrders.map((o) =>
+        o.memberId === id ? { ...o, memberId: undefined } : o
+      ),
     }));
   };
 
   // --- Handlers for Events & Bookings ---
   const handleAddEvent = (newEv: Omit<EventItem, 'id'>) => {
-    recordUndoSnapshot('Nuovo evento');
-    const id = `ev-${Date.now()}`;
-    setAppState((prev) => ({
+    const id = newId('ev');
+    applyAction('Nuovo evento', (prev) => ({
       ...prev,
       events: [...prev.events, { id, ...newEv }],
     }));
   };
 
   const handleUpdateEvent = (updatedEv: EventItem) => {
-    recordUndoSnapshot('Modifica evento');
-    setAppState((prev) => ({
+    applyAction('Modifica evento', (prev) => ({
       ...prev,
       events: prev.events.map((e) => (e.id === updatedEv.id ? updatedEv : e)),
       bookings: prev.bookings.map((b) =>
@@ -799,61 +1247,63 @@ export default function App() {
   };
 
   const handleDeleteEvent = (eventId: string) => {
-    recordUndoSnapshot('Eliminazione evento');
-    setAppState((prev) => ({
+    applyAction('Eliminazione evento', (prev) => ({
       ...prev,
       events: prev.events.filter((e) => e.id !== eventId),
       bookings: prev.bookings.filter((b) => b.eventId !== eventId),
     }));
   };
 
-  const handleAddBooking = (newBooking: Omit<EventBooking, 'id'>) => {
-    recordUndoSnapshot('Nuova iscrizione evento');
-    const id = `bk-${Date.now()}`;
+  const handleAddBooking = (newBooking: Omit<EventBooking, 'id'>): EventBooking => {
+    const id = newId('bk');
     const booking: EventBooking = { id, ...newBooking };
-    setAppState((prev) => ({
+    applyAction('Nuova iscrizione evento', (prev) => ({
       ...prev,
       bookings: [booking, ...prev.bookings],
     }));
+    return booking;
   };
 
   const handleUpdateBooking = (updated: EventBooking) => {
-    recordUndoSnapshot('Modifica iscrizione evento');
-    setAppState((prev) => ({
+    applyAction('Modifica iscrizione evento', (prev) => ({
       ...prev,
       bookings: prev.bookings.map((b) => (b.id === updated.id ? updated : b)),
     }));
   };
 
-  const handleDeleteBooking = (bookingId: string) => {
-    recordUndoSnapshot('Eliminazione iscrizione evento');
-    setAppState((prev) => ({
+  const handleDeleteBooking = (
+    bookingId: string,
+    alsoDeleteLinkedTransactions: boolean = false
+  ) => {
+    applyAction('Eliminazione iscrizione evento', (prev) => ({
       ...prev,
       bookings: prev.bookings.filter((b) => b.id !== bookingId),
+      transactions: alsoDeleteLinkedTransactions
+        ? prev.transactions.filter((t) => t.bookingId !== bookingId)
+        : prev.transactions.map((t) =>
+            t.bookingId === bookingId ? { ...t, bookingId: undefined } : t
+          ),
     }));
   };
 
   // --- Handlers for Grants (Bandi & Progetti) ---
   const handleAddGrant = (newGrant: Omit<GrantItem, 'id'>) => {
-    recordUndoSnapshot('Nuovo bando');
-    const id = `gr-${Date.now()}`;
-    setAppState((prev) => ({
+    const id = newId('gr');
+    applyAction('Nuovo bando', (prev) => ({
       ...prev,
       grants: [{ id, ...newGrant }, ...prev.grants],
     }));
   };
 
   const handleUpdateGrant = (updatedGrant: GrantItem) => {
-    recordUndoSnapshot('Modifica bando');
-    setAppState((prev) => ({
+    applyAction('Modifica bando', (prev) => ({
       ...prev,
       grants: prev.grants.map((g) => (g.id === updatedGrant.id ? updatedGrant : g)),
     }));
   };
 
   const handleDeleteGrant = (grantId: string) => {
-    recordUndoSnapshot('Eliminazione bando');
-    setAppState((prev) => ({
+    applyAction('Eliminazione bando', (prev) => ({
       ...prev,
       grants: prev.grants.filter((g) => g.id !== grantId),
     }));
@@ -861,9 +1311,8 @@ export default function App() {
 
   // --- Handlers for Gadgets & Gadget Orders ---
   const handleAddGadgetItem = (item: Omit<GadgetItem, 'id'>) => {
-    recordUndoSnapshot('Nuovo articolo gadget');
-    const id = `gd-${Date.now()}`;
-    setAppState((prev) => ({
+    const id = newId('gd');
+    applyAction('Nuovo articolo gadget', (prev) => ({
       ...prev,
       gadgets: [...prev.gadgets, { id, ...item }],
     }));
@@ -873,22 +1322,24 @@ export default function App() {
     order: Omit<GadgetOrder, 'id'>,
     registerInCashFlow: boolean
   ) => {
-    recordUndoSnapshot('Nuova prenotazione gadget');
-    const id = `go-${Date.now()}`;
+    const id = newId('go');
     const fullOrder: GadgetOrder = { id, ...order };
 
-    setAppState((prev) => {
+    applyAction('Nuova prenotazione gadget', (prev) => {
       const nextTransactions =
         registerInCashFlow && order.isPaid && order.totalPrice > 0
           ? [
               {
-                id: `tx-gd-${Date.now()}`,
+                id: newId('tx-gd'),
                 date: order.date,
                 category: 'Gadget' as const,
                 income: order.totalPrice,
                 expense: null,
                 method: order.paymentMethod,
                 description: `Gadget ${order.gadgetName} (${order.variant}) - ${order.childName}`,
+                gadgetOrderId: id,
+                memberId: order.memberId || undefined,
+                relatedMemberName: order.childName,
               },
               ...prev.transactions,
             ]
@@ -903,24 +1354,21 @@ export default function App() {
   };
 
   const handleUpdateGadgetOrder = (updated: GadgetOrder) => {
-    recordUndoSnapshot('Modifica ordine gadget');
-    setAppState((prev) => ({
+    applyAction('Modifica ordine gadget', (prev) => ({
       ...prev,
       gadgetOrders: prev.gadgetOrders.map((o) => (o.id === updated.id ? updated : o)),
     }));
   };
 
   const handleDeleteGadgetOrder = (id: string) => {
-    recordUndoSnapshot('Eliminazione ordine gadget');
-    setAppState((prev) => ({
+    applyAction('Eliminazione ordine gadget', (prev) => ({
       ...prev,
       gadgetOrders: prev.gadgetOrders.filter((o) => o.id !== id),
     }));
   };
 
   const handleImportGadgetOrders = (orders: GadgetOrder[]) => {
-    recordUndoSnapshot(`Importazione ${orders.length} ordini gadget`);
-    setAppState((prev) => ({
+    applyAction(`Importazione ${orders.length} ordini gadget`, (prev) => ({
       ...prev,
       gadgetOrders: [...orders, ...prev.gadgetOrders],
     }));
@@ -928,34 +1376,30 @@ export default function App() {
 
   // --- Handlers for Governance Roles & Assemblies ---
   const handleAddRole = (role: Omit<AssociationRole, 'id'>) => {
-    recordUndoSnapshot('Nuova carica sociale');
-    const id = `role-${Date.now()}`;
-    setAppState((prev) => ({
+    const id = newId('role');
+    applyAction('Nuova carica sociale', (prev) => ({
       ...prev,
       roles: [...prev.roles, { id, ...role }],
     }));
   };
 
   const handleUpdateRole = (updated: AssociationRole) => {
-    recordUndoSnapshot('Modifica carica sociale');
-    setAppState((prev) => ({
+    applyAction('Modifica carica sociale', (prev) => ({
       ...prev,
       roles: prev.roles.map((r) => (r.id === updated.id ? updated : r)),
     }));
   };
 
   const handleDeleteRole = (id: string) => {
-    recordUndoSnapshot('Eliminazione carica sociale');
-    setAppState((prev) => ({
+    applyAction('Eliminazione carica sociale', (prev) => ({
       ...prev,
       roles: prev.roles.filter((r) => r.id !== id),
     }));
   };
 
   const handleAddAssembly = (asm: Omit<AssemblyMeeting, 'id'>) => {
-    recordUndoSnapshot('Nuova assemblea');
-    const id = `asm-${Date.now()}`;
-    setAppState((prev) => ({
+    const id = newId('asm');
+    applyAction('Nuova assemblea', (prev) => ({
       ...prev,
       assemblies: [
         { id, ...asm },
@@ -965,8 +1409,7 @@ export default function App() {
   };
 
   const handleUpdateAssembly = (updated: AssemblyMeeting) => {
-    recordUndoSnapshot('Modifica assemblea');
-    setAppState((prev) => ({
+    applyAction('Modifica assemblea', (prev) => ({
       ...prev,
       assemblies: prev.assemblies.map((a) => (a.id === updated.id ? updated : a)),
     }));
@@ -974,34 +1417,111 @@ export default function App() {
 
   // --- Handlers for Staff ---
   const handleAddStaffMember = (newStaff: StaffMember) => {
-    recordUndoSnapshot('Nuovo collaboratore staff');
-    setAppState((prev) => ({
+    applyAction('Nuovo collaboratore staff', (prev) => ({
       ...prev,
       staff: [...prev.staff, newStaff],
     }));
   };
 
+  const handleUpdateStaffMember = (updatedStaff: StaffMember) => {
+    applyAction(`Aggiornamento collaboratore ${updatedStaff.name}`, (prev) => ({
+      ...prev,
+      staff: prev.staff.map((s) => (s.id === updatedStaff.id ? updatedStaff : s)),
+    }));
+  };
+
+  const handleLinkLegacyStaffPayments = (
+    links: {
+      transactionId: string;
+      staffId: string;
+      staffPaymentKind: 'compenso_sportivo' | 'servizi_guida' | 'progettazione' | 'rimborso_spese';
+    }[]
+  ) => {
+    if (links.length === 0) return;
+    const linkMap = new Map(links.map((l) => [l.transactionId, l]));
+    applyAction(`Collegamento ${links.length} pagamenti storici staff`, (prev) => ({
+      ...prev,
+      transactions: prev.transactions.map((tx) => {
+        const matched = linkMap.get(tx.id);
+        if (!matched) return tx;
+        return {
+          ...tx,
+          staffId: matched.staffId,
+          staffPaymentKind: matched.staffPaymentKind,
+        };
+      }),
+    }));
+  };
+
   // --- Handlers for Profile, Fiscal Year Archiving & Backup ---
   const handleUpdateProfile = (profile: AssociationProfile) => {
-    setAppState((prev) => ({ ...prev, profile }));
+    setAppState((prev) => {
+      const next = { ...prev, profile };
+      appStateRef.current = next;
+      return next;
+    });
   };
 
   const handleArchiveFiscalYear = (targetNewYear: number): ArchivedFiscalYear | null => {
-    recordUndoSnapshot(`Archiviazione anno ${appState.profile.activeYear}`);
-    const { nextState, archivedRecord } = archiveFiscalYearState(appState, targetNewYear);
-    setAppState(nextState);
-    return archivedRecord || null;
+    triggerPreActionDriveBackup('pre-archive');
+    let archived: ArchivedFiscalYear | null = null;
+    applyAction(`Archiviazione anno ${appStateRef.current.profile.activeYear}`, (prev) => {
+      const { nextState, archivedRecord } = archiveFiscalYearState(prev, targetNewYear);
+      archived = archivedRecord || null;
+      const retentionYears = nextState.profile.archiveHealthDataRetentionYears ?? 0;
+      if (retentionYears > 0 && nextState.archivedYears.length > 0) {
+        const { updatedArchives: cleanedArchives } = anonymizeArchivedHealthData(
+          nextState.archivedYears,
+          retentionYears,
+          nextState.profile.activeYear
+        );
+        return {
+          ...nextState,
+          archivedYears: cleanedArchives,
+        };
+      }
+      return nextState;
+    });
+    return archived;
+  };
+
+  const handleAnonymizeArchivedHealthData = (minAgeYears: number = 0): number => {
+    let totalAnonymized = 0;
+    applyAction('Anonimizzazione dati sanitari negli archivi storici', (prev) => {
+      const { updatedArchives: nextArchives, anonymizedMembersCount } =
+        anonymizeArchivedHealthData(
+          prev.archivedYears,
+          minAgeYears,
+          prev.profile.activeYear
+        );
+      totalAnonymized = anonymizedMembersCount;
+      if (anonymizedMembersCount === 0) return prev;
+      return {
+        ...prev,
+        archivedYears: nextArchives,
+      };
+    });
+    return totalAnonymized;
+  };
+
+  const handleUpdateArchivedYear = (updatedArch: ArchivedFiscalYear) => {
+    applyAction(`Aggiornamento archivio anno ${updatedArch.year}`, (prev) => ({
+      ...prev,
+      archivedYears: prev.archivedYears.map((a) =>
+        a.id === updatedArch.id || a.year === updatedArch.year ? updatedArch : a
+      ),
+    }));
   };
 
   const handleRestoreState = (restored: AppState) => {
-    recordUndoSnapshot('Ripristino backup');
-    setAppState(restored);
+    triggerPreActionDriveBackup('pre-overwrite');
+    applyAction('Ripristino backup', () => restored);
   };
 
   const handleResetToDefaults = () => {
-    recordUndoSnapshot('Reset gestionale');
+    triggerPreActionDriveBackup('pre-overwrite');
     const empty2027 = resetToEmpty2027(googleUserEmail);
-    setAppState(empty2027);
+    applyAction('Reset gestionale', () => empty2027);
   };
 
   // Quick navigation helpers for receipts
@@ -1034,6 +1554,98 @@ export default function App() {
       member,
     });
   };
+
+  // --- Handlers for Progressive Receipt Registry (Phase 3 & Phase 4.1) ---
+  const handleIssueReceipt = (issued: IssuedReceipt) => {
+    applyAction(`Emissione ricevuta N° ${issued.number}`, (prev) => {
+      const currentReceipts = Array.isArray(prev.receipts) ? prev.receipts : [];
+      const existingIndex = currentReceipts.findIndex((r) => r.id === issued.id);
+      const nextReceipts =
+        existingIndex >= 0
+          ? currentReceipts.map((r, idx) => (idx === existingIndex ? issued : r))
+          : [issued, ...currentReceipts];
+
+      const nextTransactions = issued.transactionId
+        ? prev.transactions.map((t) =>
+            t.id === issued.transactionId ? { ...t, receiptId: issued.id } : t
+          )
+        : prev.transactions;
+
+      return {
+        ...prev,
+        receipts: nextReceipts,
+        transactions: nextTransactions,
+      };
+    });
+  };
+
+  const handleCancelReceipt = (receiptId: string, cancelReason: string) => {
+    const trimmedReason = cancelReason.trim();
+    if (!trimmedReason) return;
+    const target = (appStateRef.current.receipts || []).find((r) => r.id === receiptId);
+    applyAction(`Annullamento ricevuta N° ${target?.number || receiptId}`, (prev) => ({
+      ...prev,
+      receipts: (prev.receipts || []).map((r) =>
+        r.id === receiptId
+          ? {
+              ...r,
+              status: 'annullata',
+              cancelReason: trimmedReason,
+              cancelledAt: new Date().toISOString(),
+            }
+          : r
+      ),
+    }));
+  };
+
+  const handleReopenReceiptFromRegistry = (
+    receipt: IssuedReceipt,
+    openGmailPanel: boolean = false
+  ) => {
+    const matchedMember = receipt.memberId
+      ? appState.members.find((m) => m.id === receipt.memberId)
+      : undefined;
+    const matchedBooking = receipt.bookingId
+      ? appState.bookings.find((b) => b.id === receipt.bookingId)
+      : undefined;
+    const matchedTx = receipt.transactionId
+      ? appState.transactions.find((t) => t.id === receipt.transactionId)
+      : undefined;
+
+    setReceiptModal({
+      isOpen: true,
+      member: matchedMember,
+      booking: matchedBooking,
+      transaction: matchedTx,
+      existingReceipt: receipt,
+      initialOpenGmailPanel: openGmailPanel,
+    });
+  };
+
+  if (standaloneLegalRoute) {
+    return (
+      <LegalPagesView
+        page={standaloneLegalRoute}
+        isStandalonePage={true}
+        onSwitchPage={(nextPage) => {
+          try {
+            window.history.pushState({}, '', `/${nextPage}`);
+          } catch {
+            // ignore pushState error in restricted iframe
+          }
+          setStandaloneLegalRoute(nextPage);
+        }}
+        onClose={() => {
+          try {
+            window.history.pushState({}, '', '/');
+          } catch {
+            // ignore pushState error in restricted iframe
+          }
+          setStandaloneLegalRoute(null);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex h-screen bg-slate-100 text-slate-900 overflow-hidden font-sans selection:bg-emerald-100 selection:text-emerald-900">
@@ -1070,6 +1682,8 @@ export default function App() {
         onReloadFromDrive={
           googleUserEmail ? () => pullStateFromGoogleDrive(googleUserEmail) : undefined
         }
+        onOpenLegalPage={(page) => setModalLegalPage(page)}
+        onOpenOnboardingWizard={() => setIsOnboardingWizardOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -1196,35 +1810,43 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'dashboard' && (
-            <DashboardView
-              transactions={appState.transactions}
-              members={appState.members}
-              bookings={appState.bookings}
-              events={appState.events}
-              profile={appState.profile}
-              assemblies={appState.assemblies}
-              grants={appState.grants}
-              roles={appState.roles}
-              initialFund={appState.initialFund}
-              initialFundBank={appState.initialFundBank}
-              initialFundCash={appState.initialFundCash}
-              googleUserEmail={googleUserEmail}
-              localFileName={localFileName}
-              onConnectLocalFile={handleConnectLocalFile}
-              onSaveLocalFile={handleSaveLocalFile}
-              setActiveTab={setActiveTab}
-              onUpdateProfile={handleUpdateProfile}
-              onUpdateAssembly={handleUpdateAssembly}
-              onAddGrant={handleAddGrant}
-              onSelectMemberForReceipt={openReceiptForMember}
-            />
-          )}
+          <Suspense
+            fallback={
+              <div className="p-8 text-center text-xs text-slate-500 font-medium">
+                Caricamento sezione...
+              </div>
+            }
+          >
+            {activeTab === 'dashboard' && (
+              <DashboardView
+                transactions={appState.transactions}
+                members={appState.members}
+                bookings={appState.bookings}
+                events={appState.events}
+                profile={appState.profile}
+                assemblies={appState.assemblies}
+                grants={appState.grants}
+                roles={appState.roles}
+                initialFund={appState.initialFund}
+                initialFundBank={appState.initialFundBank}
+                initialFundCash={appState.initialFundCash}
+                googleUserEmail={googleUserEmail}
+                localFileName={localFileName}
+                onConnectLocalFile={handleConnectLocalFile}
+                onSaveLocalFile={handleSaveLocalFile}
+                setActiveTab={setActiveTab}
+                onUpdateProfile={handleUpdateProfile}
+                onUpdateAssembly={handleUpdateAssembly}
+                onAddGrant={handleAddGrant}
+                onSelectMemberForReceipt={openReceiptForMember}
+              />
+            )}
 
           {activeTab === 'cashflow' && (
             <CashFlowView
               transactions={appState.transactions}
               members={appState.members}
+              staff={appState.staff}
               profile={appState.profile}
               googleUserEmail={googleUserEmail}
               initialFund={appState.initialFund}
@@ -1246,6 +1868,8 @@ export default function App() {
               onUpdateProfile={handleUpdateProfile}
               onOpenReceiptModalForTransaction={openReceiptForTransaction}
               onNavigateToArchive={() => setActiveTab('backup')}
+              onOpenReceiptsRegistry={() => setActiveTab('receipts_config')}
+              receiptsCount={(appState.receipts || []).length}
               canUndo={undoStack.length > 0}
               lastUndoLabel={undoStack[0]?.label || null}
               onUndo={handleUndo}
@@ -1257,6 +1881,8 @@ export default function App() {
           {activeTab === 'members' && (
             <MembersView
               members={appState.members}
+              bookings={appState.bookings}
+              transactions={appState.transactions}
               profile={appState.profile}
               googleUserEmail={googleUserEmail}
               onAddMember={handleAddMember}
@@ -1299,6 +1925,7 @@ export default function App() {
               events={appState.events}
               bookings={appState.bookings}
               members={appState.members}
+              transactions={appState.transactions}
               profile={appState.profile}
               googleUserEmail={googleUserEmail}
               onAddEvent={handleAddEvent}
@@ -1337,6 +1964,9 @@ export default function App() {
               profile={appState.profile}
               onAddTransaction={handleAddTransaction}
               onAddStaffMember={handleAddStaffMember}
+              onUpdateStaffMember={handleUpdateStaffMember}
+              onLinkLegacyStaffPayments={handleLinkLegacyStaffPayments}
+              onUpdateProfile={handleUpdateProfile}
             />
           )}
 
@@ -1376,6 +2006,7 @@ export default function App() {
               assemblies={appState.assemblies}
               grants={appState.grants}
               transactions={appState.transactions}
+              staff={appState.staff}
               profile={appState.profile}
               onUpdateProfile={handleUpdateProfile}
               onAddGrant={handleAddGrant}
@@ -1397,7 +2028,11 @@ export default function App() {
             <ReceiptConfigView
               profile={appState.profile}
               members={appState.members}
+              receipts={appState.receipts || []}
               onUpdateProfile={handleUpdateProfile}
+              onCancelReceipt={handleCancelReceipt}
+              onReopenReceiptPdf={(rec) => handleReopenReceiptFromRegistry(rec, false)}
+              onResendReceiptEmail={(rec) => handleReopenReceiptFromRegistry(rec, true)}
               onOpenSampleReceiptModal={() =>
                 setReceiptModal({
                   isOpen: true,
@@ -1416,6 +2051,8 @@ export default function App() {
               onRestoreState={handleRestoreState}
               onResetToDefaults={handleResetToDefaults}
               onArchiveFiscalYear={handleArchiveFiscalYear}
+              onUpdateArchivedYear={handleUpdateArchivedYear}
+              onAnonymizeArchivedHealthData={handleAnonymizeArchivedHealthData}
               onUpdateProfile={handleUpdateProfile}
               onImportMembers={handleImportMembers}
               onImportTransactions={handleImportTransactions}
@@ -1426,14 +2063,62 @@ export default function App() {
                   member: appState.members[0] || null,
                 })
               }
+              onOpenOnboardingWizard={() => setIsOnboardingWizardOpen(true)}
               localFileName={localFileName}
               lastLocalSavedAt={lastLocalSavedAt}
               onConnectLocalFile={handleConnectLocalFile}
               onSaveLocalFile={handleSaveLocalFile}
             />
           )}
+          </Suspense>
         </main>
       </div>
+
+      {/* Phase 5.2: Logout Confirmation Modal with Local Data Wipe (Default: Yes) */}
+      {isLogoutModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="space-y-1.5">
+              <h3 className="text-base font-extrabold text-slate-900">
+                Disconnessione Account Google
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Vuoi cancellare i dati dell&apos;associazione da questo computer?{' '}
+                <strong className="text-slate-800">(consigliato sui PC condivisi)</strong>
+              </p>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                I dati salvati su Google Drive o nel tuo file <code className="font-mono">.json</code> non
+                verranno toccati e saranno ricaricati automaticamente al prossimo accesso.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-2">
+              <button
+                type="button"
+                autoFocus
+                onClick={() => confirmGoogleLogout(true)}
+                className="w-full py-2.5 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition-colors shadow-xs"
+              >
+                Sì, esci e cancella i dati da questo computer (Consigliato)
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmGoogleLogout(false)}
+                className="w-full py-2 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs border border-slate-200 transition-colors"
+              >
+                No, esci mantenendo la copia locale su questo PC
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsLogoutModalOpen(false)}
+                className="w-full py-1.5 px-4 rounded-xl text-slate-500 hover:text-slate-800 font-medium text-xs transition-colors"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Global Duplicate Transactions Popup Modal */}
       <DuplicateTransactionsModal
@@ -1490,35 +2175,80 @@ export default function App() {
         }
       />
 
-      {/* Global Receipt & Estimate Modal */}
-      <ReceiptModal
-        isOpen={receiptModal.isOpen}
-        onClose={() => setReceiptModal({ isOpen: false })}
-        member={receiptModal.member}
-        booking={receiptModal.booking}
-        transaction={receiptModal.transaction}
-        gadgetOrder={receiptModal.gadgetOrder}
-        events={appState.events}
-        gadgets={appState.gadgets}
-        googleUserEmail={googleUserEmail}
-        profile={appState.profile}
-        onUpdateProfile={handleUpdateProfile}
-        onUpdateMember={handleUpdateMember}
-        onUpdateBooking={handleUpdateBooking}
-        onUpdateGadgetOrder={handleUpdateGadgetOrder}
-        onOpenFullConfigPanel={() => setActiveTab('receipts_config')}
+      {/* Global Receipt & Estimate Modal (Lazy-loaded on open) */}
+      {receiptModal.isOpen && (
+        <Suspense fallback={null}>
+          <ReceiptModal
+            isOpen={receiptModal.isOpen}
+            onClose={() => setReceiptModal({ isOpen: false })}
+            member={receiptModal.member}
+            booking={receiptModal.booking}
+            transaction={receiptModal.transaction}
+            gadgetOrder={receiptModal.gadgetOrder}
+            existingReceipt={receiptModal.existingReceipt}
+            initialOpenGmailPanel={receiptModal.initialOpenGmailPanel}
+            receipts={appState.receipts || []}
+            events={appState.events}
+            gadgets={appState.gadgets}
+            googleUserEmail={googleUserEmail}
+            profile={appState.profile}
+            onUpdateProfile={handleUpdateProfile}
+            onUpdateMember={handleUpdateMember}
+            onUpdateBooking={handleUpdateBooking}
+            onUpdateGadgetOrder={handleUpdateGadgetOrder}
+            onIssueReceipt={handleIssueReceipt}
+            onOpenFullConfigPanel={() => setActiveTab('receipts_config')}
+          />
+        </Suspense>
+      )}
+
+      {/* Global Digital Membership Card Generator & Template Designer Modal (Lazy-loaded on open) */}
+      {digitalCardModal.isOpen && (
+        <Suspense fallback={null}>
+          <DigitalMemberCardModal
+            isOpen={digitalCardModal.isOpen}
+            onClose={() => setDigitalCardModal({ isOpen: false, member: null })}
+            member={digitalCardModal.member}
+            members={appState.members}
+            profile={appState.profile}
+            onUpdateProfile={handleUpdateProfile}
+            onUpdateMember={handleUpdateMember}
+          />
+        </Suspense>
+      )}
+
+      {/* Global Google Drive Sync Conflict & Multi-Candidate Resolution Modal (Phase 1) */}
+      <SyncConflictModal
+        isOpen={syncConflictModal.isOpen}
+        localState={appState}
+        remoteState={syncConflictModal.remoteState}
+        candidates={syncConflictModal.candidates}
+        selectedCandidateId={syncConflictModal.selectedCandidateId}
+        isResolving={syncConflictModal.isResolving}
+        onUseRemote={handleResolveConflictUseRemote}
+        onPushLocal={handleResolveConflictPushLocal}
+        onSelectCandidate={handleSelectDriveCandidate}
       />
 
-      {/* Global Digital Membership Card Generator & Template Designer Modal */}
-      <DigitalMemberCardModal
-        isOpen={digitalCardModal.isOpen}
-        onClose={() => setDigitalCardModal({ isOpen: false, member: null })}
-        member={digitalCardModal.member}
-        members={appState.members}
+      {/* Phase 7: Guided First-Start & Multi-Association Onboarding Wizard Modal */}
+      <OnboardingWizardModal
+        isOpen={isOnboardingWizardOpen}
         profile={appState.profile}
-        onUpdateProfile={handleUpdateProfile}
-        onUpdateMember={handleUpdateMember}
+        onClose={() => setIsOnboardingWizardOpen(false)}
+        onSaveProfile={(updatedProfile) => {
+          handleUpdateProfile(updatedProfile);
+        }}
       />
+
+      {/* Phase 7: Privacy (/privacy) and Terms (/termini) Modal View */}
+      {modalLegalPage && (
+        <LegalPagesView
+          page={modalLegalPage}
+          isStandalonePage={false}
+          onSwitchPage={(nextPage) => setModalLegalPage(nextPage)}
+          onClose={() => setModalLegalPage(null)}
+        />
+      )}
     </div>
   );
 }

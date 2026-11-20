@@ -727,7 +727,7 @@ export const GovernanceView: React.FC<GovernanceViewProps> = ({
                 Documenti salvati su Google Drive ({driveFiles.length})
               </h4>
               <p className="text-xs text-slate-500">
-                Cartella Drive: <span className="font-mono">{DRIVE_MINUTES_FOLDER_NAME}</span>
+                Cartella Drive: <span className="font-mono">{DRIVE_MINUTES_FOLDER_NAME}</span> · Qui compaiono i documenti caricati o generati tramite il gestionale (permesso <code className="font-mono">drive.file</code>).
               </p>
             </div>
             <label className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition-colors cursor-pointer">
@@ -743,7 +743,7 @@ export const GovernanceView: React.FC<GovernanceViewProps> = ({
 
           {driveFiles.length === 0 ? (
             <div className="p-6 text-center bg-slate-50 rounded-lg border border-slate-100 text-xs text-slate-400">
-              Nessun file ancora presente nella cartella "{DRIVE_MINUTES_FOLDER_NAME}". Usa i
+              Nessun file ancora presente nella cartella "{DRIVE_MINUTES_FOLDER_NAME}" tra quelli caricati o generati dal gestionale. Usa i
               pulsanti "Salva Verbale su Drive" o "Carica Documento su Drive".
             </div>
           ) : (

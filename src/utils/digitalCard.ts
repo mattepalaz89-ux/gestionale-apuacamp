@@ -18,8 +18,17 @@ export const DEFAULT_INSURANCE_TYPE_LABELS: InsuranceTypeLabels = {
 export function resolveInsuranceTypeLabels(
   profile?: AssociationProfile
 ): InsuranceTypeLabels {
+  const fromCardTypes: InsuranceTypeLabels = {};
+  if (Array.isArray(profile?.cardTypes)) {
+    for (const ct of profile.cardTypes) {
+      if (ct?.id && ct?.label) {
+        fromCardTypes[ct.id] = ct.label;
+      }
+    }
+  }
   return {
     ...DEFAULT_INSURANCE_TYPE_LABELS,
+    ...fromCardTypes,
     ...(profile?.insuranceTypeLabels || {}),
   };
 }
@@ -157,7 +166,7 @@ export const DEFAULT_DIGITAL_CARD_CONFIG: DigitalCardTemplateConfig = {
   showQrVerificationBadge: true,
   qrXPercent: 88,
   qrYPercent: 52,
-  customFooterText: 'Ideato da ASD Apuacamp',
+  customFooterText: 'Tessera Associativa Ufficiale',
   fields: DEFAULT_DIGITAL_CARD_FIELDS.map((f) => ({ ...f })),
 };
 
@@ -271,9 +280,12 @@ export function resolveCardFieldTextValue(
 
   switch (field.id) {
     case 'associationName':
-      return { prefix, value: profile.name || 'Apuacamp A.S.D.' };
+      return {
+        prefix,
+        value: profile.name || 'Associazione Sportiva Dilettantistica',
+      };
     case 'affiliation':
-      return { prefix, value: profile.affiliation || 'Affiliata US ACLI' };
+      return { prefix, value: profile.affiliation || 'Ente di Affiliazione' };
     case 'cardTitle':
       return {
         prefix: '',
@@ -285,7 +297,7 @@ export function resolveCardFieldTextValue(
       const num =
         customOverrides?.cardNumber !== undefined
           ? customOverrides.cardNumber
-          : member.membershipCardNumber || `USACLI-${profile.activeYear}-001`;
+          : member.membershipCardNumber || `TESS-${profile.activeYear}-001`;
       return { prefix, value: num };
     }
     case 'insuranceType': {
@@ -310,13 +322,17 @@ export function resolveCardFieldTextValue(
         prefix,
         value: member.childFiscalCode || member.parentFiscalCode || 'N/D',
       };
-    case 'customFooter':
+    case 'customFooter': {
+      const defaultFooter =
+        profile.showApuacampAttributionInDocs ||
+        (profile.name || '').toLowerCase().includes('apuacamp')
+          ? 'Ideato da ASD Apuacamp'
+          : 'Tessera Associativa Ufficiale';
       return {
         prefix: '',
-        value:
-          profile.digitalCardConfig?.customFooterText ||
-          'Ideato da ASD Apuacamp',
+        value: profile.digitalCardConfig?.customFooterText || defaultFooter,
       };
+    }
   }
 }
 
@@ -324,10 +340,10 @@ export function resolveCardFieldTextValue(
  * Generates an SVG data URL for the association's emblem / crest ("Stemma dell'Associazione")
  */
 export function generateAsdEmblemDataUrl(
-  asdName: string = 'Apuacamp A.S.D.',
-  affiliation: string = 'US ACLI'
+  asdName: string = 'Associazione Sportiva Dilettantistica',
+  affiliation: string = 'ASD'
 ): string {
-  const cleanName = (asdName || 'ASD Apuacamp').trim().toUpperCase().slice(0, 26);
+  const cleanName = (asdName || 'Associazione').trim().toUpperCase().slice(0, 26);
   const initials = cleanName
     .split(/\s+/)
     .filter((w) => !w.includes('A.S.D') && !w.includes('ASD'))
@@ -383,15 +399,15 @@ export async function processDigitalCardBackgroundFile(file: File): Promise<{
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const targetW = 1020;
-        const targetH = 640;
+        const targetW = 800;
+        const targetH = 502;
         canvas.width = targetW;
         canvas.height = targetH;
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, targetW, targetH);
           resolve({
-            previewDataUrl: canvas.toDataURL('image/jpeg', 0.92),
+            previewDataUrl: canvas.toDataURL('image/jpeg', 0.82),
             fileName: file.name,
           });
         } else {
@@ -402,14 +418,6 @@ export async function processDigitalCardBackgroundFile(file: File): Promise<{
       img.src = dataUrl;
     });
   }
-
-  // Handle .PDF file uploaded as background
-  const rawPdfDataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('Errore lettura file PDF'));
-    reader.readAsDataURL(file);
-  });
 
   // Try to extract an embedded JPEG stream from the PDF binary if present;
   // otherwise generate a stylized PDF-template vector background canvas so the user immediately sees their PDF background active.
@@ -443,9 +451,26 @@ export async function processDigitalCardBackgroundFile(file: File): Promise<{
         r.readAsDataURL(blob);
       });
       if (extractedUrl.startsWith('data:image/')) {
+        // Compress extracted JPEG to max 800x502
+        const compressedPreview = await new Promise<string>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 800;
+            canvas.height = 502;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, 800, 502);
+              resolve(canvas.toDataURL('image/jpeg', 0.82));
+            } else {
+              resolve(extractedUrl);
+            }
+          };
+          img.onerror = () => resolve(extractedUrl);
+          img.src = extractedUrl;
+        });
         return {
-          previewDataUrl: extractedUrl,
-          rawPdfDataUrl,
+          previewDataUrl: compressedPreview,
           fileName: file.name,
         };
       }
@@ -454,36 +479,35 @@ export async function processDigitalCardBackgroundFile(file: File): Promise<{
     // fallback to canvas rendering below
   }
 
-  // Render a clean graphic background representing the loaded PDF template
+  // Render a clean graphic background representing the loaded PDF template (800x502 JPEG)
   const canvas = document.createElement('canvas');
-  canvas.width = 1020;
-  canvas.height = 640;
+  canvas.width = 800;
+  canvas.height = 502;
   const ctx = canvas.getContext('2d');
   if (ctx) {
-    const grad = ctx.createLinearGradient(0, 0, 1020, 640);
+    const grad = ctx.createLinearGradient(0, 0, 800, 502);
     grad.addColorStop(0, '#0f172a');
     grad.addColorStop(0.5, '#065f46');
     grad.addColorStop(1, '#1e293b');
     ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 1020, 640);
+    ctx.fillRect(0, 0, 800, 502);
 
     // Subtle geometric pattern from PDF template
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 2;
-    for (let x = -200; x < 1200; x += 80) {
+    for (let x = -200; x < 1000; x += 65) {
       ctx.beginPath();
       ctx.moveTo(x, 0);
-      ctx.lineTo(x + 320, 640);
+      ctx.lineTo(x + 250, 502);
       ctx.stroke();
     }
     ctx.strokeStyle = 'rgba(251, 191, 36, 0.35)';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(18, 18, 1020 - 36, 640 - 36);
+    ctx.lineWidth = 3;
+    ctx.strokeRect(14, 14, 800 - 28, 502 - 28);
   }
 
   return {
-    previewDataUrl: canvas.toDataURL('image/jpeg', 0.92),
-    rawPdfDataUrl,
+    previewDataUrl: canvas.toDataURL('image/jpeg', 0.82),
     fileName: file.name,
   };
 }
@@ -788,8 +812,13 @@ export async function exportDigitalCardToPdf(
 
   ctx.fillStyle = '#64748b';
   ctx.font = 'italic 16px Arial, sans-serif';
+  const showAttribution =
+    options.profile.showApuacampAttributionInDocs ||
+    (options.profile.name || '').toLowerCase().includes('apuacamp');
   ctx.fillText(
-    `Generato da ${options.profile.name} — Piattaforma Gestionale ideata da ASD Apuacamp`,
+    showAttribution
+      ? `Generato da ${options.profile.name || 'Associazione'} — Piattaforma Gestionale ideata da ASD Apuacamp`
+      : `Documento ufficiale generato da ${options.profile.name || 'Associazione Sportiva Dilettantistica'}`,
     90,
     pageH - 80
   );

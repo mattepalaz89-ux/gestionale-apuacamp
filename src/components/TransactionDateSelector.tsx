@@ -1,19 +1,8 @@
 import React, { useState } from 'react';
 import { Calendar, Clock } from 'lucide-react';
+import { todayIso as getTodayIsoDate, formatIsoToDisplay as formatIsoToItalian } from '../utils/dates';
 
-export function getTodayIsoDate(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-export function formatIsoToItalian(isoDate: string): string {
-  if (!isoDate || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) return isoDate;
-  const [y, m, d] = isoDate.split('-');
-  return `${d}/${m}/${y}`;
-}
+export { getTodayIsoDate, formatIsoToItalian };
 
 export interface TransactionDateSelectorProps {
   value?: string;

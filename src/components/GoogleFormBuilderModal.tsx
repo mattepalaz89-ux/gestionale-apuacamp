@@ -23,6 +23,7 @@ import {
   SUGGESTED_EXTRA_FORM_FIELDS,
   resolveProfileFormFields,
 } from '../utils/formAndReceiptTemplates';
+import { newId } from '../utils/ids';
 
 interface GoogleFormBuilderModalProps {
   isOpen: boolean;
@@ -124,7 +125,7 @@ export const GoogleFormBuilderModal: React.FC<GoogleFormBuilderModalProps> = ({
         : undefined;
 
     const created: GoogleFormFieldConfig = {
-      id: `custom-f-${Date.now()}`,
+      id: newId('custom-f'),
       title: newTitle.trim(),
       description: newDesc.trim() || undefined,
       questionType: newType,
@@ -165,7 +166,7 @@ export const GoogleFormBuilderModal: React.FC<GoogleFormBuilderModalProps> = ({
 
     const created: GoogleFormFieldConfig = {
       ...tpl,
-      id: `sug-f-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      id: newId('sug-f'),
     };
     const next = [...allFields, created];
     setAllFields(next);
