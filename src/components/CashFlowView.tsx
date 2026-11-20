@@ -21,6 +21,9 @@ import {
   Redo2,
   CheckSquare,
   Square,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import {
   CashTransaction,
@@ -35,7 +38,14 @@ import {
   DuplicateTransactionGroup,
   RecurringExpensePlan,
 } from '../types';
-import { formatEuro, calculateCashTotals, parseAmount } from '../utils/finance';
+import {
+  formatEuro,
+  calculateCashTotals,
+  parseAmount,
+  sortCashTransactions,
+  CashSortField,
+  CashSortDirection,
+} from '../utils/finance';
 import { todayIso } from '../utils/dates';
 import { newId } from '../utils/ids';
 import { RecurringExpensesPanel } from './RecurringExpensesPanel';
@@ -137,6 +147,8 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedMethod, setSelectedMethod] = useState<string>('ALL');
   const [selectedType, setSelectedType] = useState<'ALL' | 'INCOME' | 'EXPENSE'>('ALL');
+  const [sortField, setSortField] = useState<CashSortField>('date');
+  const [sortDirection, setSortDirection] = useState<CashSortDirection>('desc');
   const [bannerMsg, setBannerMsg] = useState<{
     type: 'ok' | 'err';
     text: string;
@@ -254,7 +266,7 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
   ];
 
   const filteredTransactions = useMemo(() => {
-    return transactions.filter((t) => {
+    const filtered = transactions.filter((t) => {
       if (selectedCategory !== 'ALL' && t.category !== selectedCategory) return false;
       if (selectedMethod !== 'ALL' && t.method !== selectedMethod) return false;
       if (selectedType === 'INCOME' && (!t.income || t.income <= 0)) return false;
@@ -265,11 +277,38 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         const catMatch = (t.category || '').toLowerCase().includes(q);
         const methMatch = (t.method || '').toLowerCase().includes(q);
         const dateMatch = (t.date || '').toLowerCase().includes(q);
-        return descMatch || catMatch || methMatch || dateMatch;
+        const memberNameMatch = (t.relatedMemberName || '').toLowerCase().includes(q);
+        return descMatch || catMatch || methMatch || dateMatch || memberNameMatch;
       }
       return true;
     });
-  }, [transactions, selectedCategory, selectedMethod, selectedType, search]);
+    return sortCashTransactions(filtered, sortField, sortDirection);
+  }, [transactions, selectedCategory, selectedMethod, selectedType, search, sortField, sortDirection]);
+
+  const handleToggleSortColumn = (field: CashSortField) => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      // Text fields default to A->Z ('asc'), dates and amounts default to 'desc' (most recent / largest)
+      setSortDirection(
+        field === 'category' || field === 'description' || field === 'method' || field === 'type'
+          ? 'asc'
+          : 'desc'
+      );
+    }
+  };
+
+  const renderSortIcon = (field: CashSortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown className="w-3 h-3 text-slate-300 group-hover/th:text-slate-500 shrink-0" />;
+    }
+    return sortDirection === 'asc' ? (
+      <ArrowUp className="w-3 h-3 text-emerald-700 shrink-0" />
+    ) : (
+      <ArrowDown className="w-3 h-3 text-emerald-700 shrink-0" />
+    );
+  };
 
   // Keep only valid existing IDs in selectedTxIds
   const activeSelectedIds = useMemo(() => {
@@ -1190,6 +1229,38 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
               Uscite
             </button>
           </div>
+
+          <div className="flex items-center gap-1.5">
+            <select
+              id="select-cashflow-sort"
+              aria-label="Ordina movimenti del Libro Cassa"
+              value={`${sortField}:${sortDirection}`}
+              onChange={(e) => {
+                const [f, d] = e.target.value.split(':') as [CashSortField, CashSortDirection];
+                setSortField(f);
+                setSortDirection(d);
+              }}
+              className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-medium"
+              title="Ordina il Libro Cassa per data, categoria, causale, canale, tipologia o importo (A→Z e Z→A)"
+            >
+              <option value="date:desc">Ordina: Data (dal più recente Z→A)</option>
+              <option value="date:asc">Ordina: Data (cronologico A→Z)</option>
+              <option value="category:asc">Ordina: Categoria / Tipologia (A → Z)</option>
+              <option value="category:desc">Ordina: Categoria / Tipologia (Z → A)</option>
+              <option value="description:asc">Ordina: Causale &amp; Dettagli (A → Z)</option>
+              <option value="description:desc">Ordina: Causale &amp; Dettagli (Z → A)</option>
+              <option value="method:asc">Ordina: Canale pagamento (A → Z)</option>
+              <option value="method:desc">Ordina: Canale pagamento (Z → A)</option>
+              <option value="type:asc">Ordina: Tipologia (prima Entrate A→Z)</option>
+              <option value="type:desc">Ordina: Tipologia (prima Uscite Z→A)</option>
+              <option value="amount:desc">Ordina: Importo (dal più alto)</option>
+              <option value="amount:asc">Ordina: Importo (dal più basso)</option>
+              <option value="income:desc">Ordina: Entrata (importo decrescente)</option>
+              <option value="income:asc">Ordina: Entrata (importo crescente)</option>
+              <option value="expense:desc">Ordina: Uscita (importo decrescente)</option>
+              <option value="expense:asc">Ordina: Uscita (importo crescente)</option>
+            </select>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
@@ -1301,13 +1372,73 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
                     title="Seleziona o deseleziona tutti i movimenti mostrati"
                   />
                 </th>
-                <th className="py-3 px-3 w-28">Data</th>
-                <th className="py-3 px-3 w-32">Categoria</th>
-                <th className="py-3 px-4">Causale & Dettagli</th>
-                <th className="py-3 px-3 w-28">Canale</th>
-                <th className="py-3 px-3 text-right w-28">Entrata</th>
-                <th className="py-3 px-3 text-right w-28">Uscita</th>
-                <th className="py-3 px-4 text-center w-36">Azioni & Modifica</th>
+                <th className="py-3 px-3 w-28">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSortColumn('date')}
+                    className="group/th inline-flex items-center gap-1 uppercase tracking-wider hover:text-slate-900 transition-colors cursor-pointer"
+                    title="Clicca per ordinare cronologicamente per Data (A→Z / Z→A)"
+                  >
+                    <span>Data</span>
+                    {renderSortIcon('date')}
+                  </button>
+                </th>
+                <th className="py-3 px-3 w-36">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSortColumn('category')}
+                    className="group/th inline-flex items-center gap-1 uppercase tracking-wider hover:text-slate-900 transition-colors cursor-pointer"
+                    title="Clicca per ordinare alfabeticamente per Categoria / Tipologia (A→Z / Z→A)"
+                  >
+                    <span>Categoria</span>
+                    {renderSortIcon('category')}
+                  </button>
+                </th>
+                <th className="py-3 px-4">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSortColumn('description')}
+                    className="group/th inline-flex items-center gap-1 uppercase tracking-wider hover:text-slate-900 transition-colors cursor-pointer"
+                    title="Clicca per ordinare alfabeticamente per Causale & Dettagli (A→Z / Z→A)"
+                  >
+                    <span>Causale &amp; Dettagli</span>
+                    {renderSortIcon('description')}
+                  </button>
+                </th>
+                <th className="py-3 px-3 w-28">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSortColumn('method')}
+                    className="group/th inline-flex items-center gap-1 uppercase tracking-wider hover:text-slate-900 transition-colors cursor-pointer"
+                    title="Clicca per ordinare alfabeticamente per Canale di pagamento (A→Z / Z→A)"
+                  >
+                    <span>Canale</span>
+                    {renderSortIcon('method')}
+                  </button>
+                </th>
+                <th className="py-3 px-3 text-right w-28">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSortColumn('income')}
+                    className="group/th inline-flex items-center justify-end gap-1 uppercase tracking-wider hover:text-slate-900 transition-colors cursor-pointer ml-auto"
+                    title="Clicca per ordinare per importo Entrata (crescente / decrescente)"
+                  >
+                    <span>Entrata</span>
+                    {renderSortIcon('income')}
+                  </button>
+                </th>
+                <th className="py-3 px-3 text-right w-28">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSortColumn('expense')}
+                    className="group/th inline-flex items-center justify-end gap-1 uppercase tracking-wider hover:text-slate-900 transition-colors cursor-pointer ml-auto"
+                    title="Clicca per ordinare per importo Uscita (crescente / decrescente)"
+                  >
+                    <span>Uscita</span>
+                    {renderSortIcon('expense')}
+                  </button>
+                </th>
+                <th className="py-3 px-4 text-center w-36">Azioni &amp; Modifica</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">

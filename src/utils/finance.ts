@@ -12,6 +12,7 @@ import {
   PaymentAccountsMap,
   CustomPaymentAccount,
 } from '../types';
+import { compareIsoDates } from './dates';
 
 export const DEFAULT_PAYMENT_ACCOUNTS: Record<PaymentMethod, BuiltInPaymentAccountId> = {
   Bonifico: 'banca',
@@ -624,5 +625,102 @@ export function calculateMultiItemReceiptTotals(params: {
     voucherApplied: calc.voucherApplied,
     netTotal: calc.finalNetPrice,
   };
+}
+
+export type CashSortField =
+  | 'date'
+  | 'category'
+  | 'description'
+  | 'method'
+  | 'income'
+  | 'expense'
+  | 'amount'
+  | 'type';
+
+export type CashSortDirection = 'asc' | 'desc';
+
+const itCollator = new Intl.Collator('it', {
+  sensitivity: 'base',
+  numeric: true,
+});
+
+/**
+ * Pure comparator helper for sorting Libro Cassa transactions chronologically, alphabetically (A->Z / Z->A),
+ * by movement type (Entrata / Uscita), or by amount.
+ */
+export function sortCashTransactions(
+  transactions: CashTransaction[],
+  field: CashSortField = 'date',
+  direction: CashSortDirection = 'desc'
+): CashTransaction[] {
+  const dir = direction === 'asc' ? 1 : -1;
+
+  return [...transactions].sort((a, b) => {
+    let cmp = 0;
+
+    switch (field) {
+      case 'date': {
+        cmp = compareIsoDates(a.date, b.date) * dir;
+        break;
+      }
+      case 'category': {
+        cmp = itCollator.compare(a.category || '', b.category || '') * dir;
+        break;
+      }
+      case 'description': {
+        cmp = itCollator.compare(a.description || '', b.description || '') * dir;
+        break;
+      }
+      case 'method': {
+        cmp = itCollator.compare(a.method || '', b.method || '') * dir;
+        break;
+      }
+      case 'type': {
+        // Entrata vs Uscita ('Entrata' < 'Uscita' in A->Z)
+        const typeA = (a.income || 0) > 0 ? 'Entrata' : 'Uscita';
+        const typeB = (b.income || 0) > 0 ? 'Entrata' : 'Uscita';
+        cmp = itCollator.compare(typeA, typeB) * dir;
+        break;
+      }
+      case 'income': {
+        const incA = a.income || 0;
+        const incB = b.income || 0;
+        const hasIncA = incA > 0;
+        const hasIncB = incB > 0;
+        // Keep rows that actually have an income above rows that are pure expenses
+        if (hasIncA !== hasIncB) {
+          return hasIncA ? -1 : 1;
+        }
+        cmp = (incA - incB) * dir;
+        break;
+      }
+      case 'expense': {
+        const expA = a.expense || 0;
+        const expB = b.expense || 0;
+        const hasExpA = expA > 0;
+        const hasExpB = expB > 0;
+        // Keep rows that actually have an expense above rows that are pure incomes
+        if (hasExpA !== hasExpB) {
+          return hasExpA ? -1 : 1;
+        }
+        cmp = (expA - expB) * dir;
+        break;
+      }
+      case 'amount': {
+        const amtA = (a.income || 0) > 0 ? a.income || 0 : a.expense || 0;
+        const amtB = (b.income || 0) > 0 ? b.income || 0 : b.expense || 0;
+        cmp = (amtA - amtB) * dir;
+        break;
+      }
+    }
+
+    if (cmp !== 0) return cmp;
+
+    // Tie-breakers: chronological date, then alphabetical description
+    const dateTie = compareIsoDates(a.date, b.date) * (field === 'date' ? dir : -1);
+    if (dateTie !== 0) return dateTie;
+
+    return itCollator.compare(a.description || '', b.description || '');
+  });
 }
 

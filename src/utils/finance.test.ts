@@ -7,6 +7,7 @@ import {
   mergeSavedDiscountLabels,
   calculateDiscountedEventPrice,
   calculateMultiItemReceiptTotals,
+  sortCashTransactions,
 } from './finance';
 import {
   generatePreEventBriefings,
@@ -1862,7 +1863,90 @@ describe('Sortable Members, Event Discounts (Fixed € / %), Vouchers & Smart Re
     const dupCheck = areTransactionsPotentialDuplicates(txSibling1, txSibling2, siblings, []);
     assert.equal(dupCheck.isDuplicate, false);
   });
+
+  it('sortCashTransactions sorts Libro Cassa chronologically, alphabetically (A->Z / Z->A), by type, and by amount', () => {
+    const sampleTxs: CashTransaction[] = [
+      {
+        id: 't1',
+        date: '2027-03-15',
+        category: 'Tessere',
+        description: 'Quota Tessera Marco',
+        method: 'Contanti',
+        income: 20,
+        expense: null,
+      },
+      {
+        id: 't2',
+        date: '2027-01-10',
+        category: 'Acquisto Strumenti',
+        description: 'Bussola e corde',
+        method: 'Bonifico',
+        income: null,
+        expense: 150,
+      },
+      {
+        id: 't3',
+        date: '2027-05-02',
+        category: 'Evento',
+        description: 'Acconto Rifugio Anna',
+        method: 'Paypal',
+        income: 80,
+        expense: null,
+      },
+    ];
+
+    // Chronological A->Z (oldest to newest) and Z->A (newest to oldest)
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'date', 'asc').map((t) => t.id),
+      ['t2', 't1', 't3']
+    );
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'date', 'desc').map((t) => t.id),
+      ['t3', 't1', 't2']
+    );
+
+    // Category A->Z and Z->A
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'category', 'asc').map((t) => t.category),
+      ['Acquisto Strumenti', 'Evento', 'Tessere']
+    );
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'category', 'desc').map((t) => t.category),
+      ['Tessere', 'Evento', 'Acquisto Strumenti']
+    );
+
+    // Description A->Z and Z->A
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'description', 'asc').map((t) => t.id),
+      ['t3', 't2', 't1']
+    );
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'description', 'desc').map((t) => t.id),
+      ['t1', 't2', 't3']
+    );
+
+    // Type (Entrata vs Uscita)
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'type', 'asc').map((t) => t.id),
+      ['t3', 't1', 't2']
+    );
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'type', 'desc').map((t) => t.id),
+      ['t2', 't3', 't1']
+    );
+
+    // Amount descending / ascending
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'amount', 'desc').map((t) => t.id),
+      ['t2', 't3', 't1']
+    );
+    assert.deepEqual(
+      sortCashTransactions(sampleTxs, 'amount', 'asc').map((t) => t.id),
+      ['t1', 't3', 't2']
+    );
+  });
 });
+
 
 
 
