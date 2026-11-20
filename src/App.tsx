@@ -65,8 +65,15 @@ import {
   hydrateAppState,
   bumpStateVersion,
   deriveAssociationId,
+  deleteMemberFromState,
+  deleteEventFromState,
+  deleteBookingFromState,
+  deleteGadgetOrderFromState,
+  deleteTransactionsFromState,
+  deleteStaffMemberFromState,
   AppState,
 } from './utils/storage';
+import { findExistingReceiptForContext } from './utils/receipts';
 import {
   loadLocalSnapshotRecord,
   saveLocalSnapshot,
@@ -77,7 +84,7 @@ import {
   clearLocalAccountData,
 } from './utils/localDb';
 import { anonymizeArchivedHealthData } from './utils/sanitize';
-import { decideSyncAction } from './utils/syncOrder';
+import { decideSyncAction, decideSaveAction } from './utils/syncOrder';
 import { createSaveQueue, SaveQueue } from './utils/saveQueue';
 import { newId } from './utils/ids';
 import { todayIso } from './utils/dates';
@@ -126,6 +133,7 @@ import {
   saveLiveDatabaseToDrive,
   ensureGestionaleDriveStructure,
   createDriveBackupSnapshot,
+  checkDriveFileVersion,
 } from './services/googleWorkspace';
 
 function detectLegalRouteFromLocation(): LegalPageType | null {
@@ -146,6 +154,8 @@ function detectLegalRouteFromLocation(): LegalPageType | null {
 export default function App() {
   const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppState>(() => loadAppState(null));
+  // Blocco 1.3: Block autosave from overwriting snapshot:local until initial auth & local snapshot loading finishes
+  const [isStartupResolved, setIsStartupResolved] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [isPageGuideExpanded, setIsPageGuideExpanded] = useState<boolean>(false);
@@ -153,6 +163,7 @@ export default function App() {
   const [isDuplicatesModalOpen, setIsDuplicatesModalOpen] = useState<boolean>(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
   const [driveAuthExpiredNotice, setDriveAuthExpiredNotice] = useState<boolean>(false);
+  const [remoteUpdatedNotice, setRemoteUpdatedNotice] = useState<string | null>(null);
   const [isOnboardingWizardOpen, setIsOnboardingWizardOpen] = useState<boolean>(false);
   const [standaloneLegalRoute, setStandaloneLegalRoute] = useState<LegalPageType | null>(() =>
     detectLegalRouteFromLocation()
@@ -176,6 +187,12 @@ export default function App() {
   const appStateRef = useRef<AppState>(appState);
   appStateRef.current = appState;
 
+  // Blocco 1.6: Track the highest version ever seen in this session (across local, remote, and undo history)
+  const maxKnownVersionRef = useRef<number>(appState.version || 1);
+  if ((appState.version || 1) > maxKnownVersionRef.current) {
+    maxKnownVersionRef.current = appState.version || 1;
+  }
+
   // Persisted ignored duplicate signatures and detection mode inside profile (so they are saved on Google Drive & Local File)
   const ignoredDuplicateSignatures = useMemo(
     () => appState.profile.ignoredDuplicateSignatures || [],
@@ -189,10 +206,26 @@ export default function App() {
   const localFileHandleRef = useRef<any | null>(null);
   const localJsonInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Blocco 1.7: Confirmation modal before opening a local .json file & prompt if pre-action backup fails
+  const [pendingLocalFileOpenModal, setPendingLocalFileOpenModal] = useState<{
+    isOpen: boolean;
+    fileName: string;
+    parsedState: AppState;
+    handle?: any;
+  } | null>(null);
+
+  const [backupFailurePrompt, setBackupFailurePrompt] = useState<{
+    isOpen: boolean;
+    actionLabel: string;
+    onProceedAnyway: () => void;
+  } | null>(null);
+
   // Real-time Google Drive persistence state ("Salvataggio in diretta su Drive")
   const [driveSyncState, setDriveSyncState] = useState<DriveLiveSyncState>('idle');
   const [lastDriveSavedAt, setLastDriveSavedAt] = useState<string | null>(null);
   const liveDriveFileIdRef = useRef<string | undefined>(undefined);
+  // Blocco 1.1: Native Google Drive file version string from the last load or save
+  const knownDriveVersionRef = useRef<string | null>(null);
   const isHydratingFromDriveRef = useRef<boolean>(false);
   const lastSavedJsonRef = useRef<string>('');
   const initialDefaultJsonRef = useRef<string>('');
@@ -237,11 +270,6 @@ export default function App() {
   const googleUserEmailRef = useRef<string | null>(googleUserEmail);
   googleUserEmailRef.current = googleUserEmail;
 
-  // Migrate legacy localStorage keys once on app mount and purge SNAPSHOT_KEY_LATEST
-  useEffect(() => {
-    void migrateLegacyLocalStorageSnapshots(hydrateAppState);
-  }, []);
-
   // Helper to strip volatile version/timestamp fields when comparing whether actual business data changed
   const getBusinessPayloadSignature = useCallback((state: AppState): string => {
     const { version: _v, updatedAt: _u, updatedBy: _b, ...businessData } = state;
@@ -250,7 +278,7 @@ export default function App() {
 
   const lastBusinessSignatureRef = useRef<string>(getBusinessPayloadSignature(appState));
 
-  // Helper to trigger a background automatic backup on Google Drive before destructive operations
+  // Helper to trigger a background automatic backup on Google Drive before non-overwrite operations (e.g. bulk delete)
   const triggerPreActionDriveBackup = useCallback(
     (reason: DriveBackupReason) => {
       if (!googleUserEmailRef.current) return;
@@ -261,18 +289,77 @@ export default function App() {
     []
   );
 
+  // Blocco 1.7: Guaranteed pre-action backup before destructive replace/restore/reset/local-open operations.
+  // Awaits the backup (on Drive if logged in, or local JSON download if not logged in); if it fails, asks the user before proceeding.
+  const runWithGuaranteedPreActionBackup = useCallback(
+    async (
+      reason: DriveBackupReason,
+      actionLabel: string,
+      performAction: () => void
+    ): Promise<void> => {
+      const currentSnap = appStateRef.current;
+      if (countAppStateRecords(currentSnap) === 0) {
+        performAction();
+        return;
+      }
+
+      if (googleUserEmailRef.current) {
+        try {
+          await createDriveBackupSnapshot(currentSnap, reason);
+          performAction();
+        } catch (err) {
+          console.warn(`Pre-action Drive backup (${reason}) failed:`, err);
+          setBackupFailurePrompt({
+            isOpen: true,
+            actionLabel,
+            onProceedAnyway: performAction,
+          });
+        }
+        return;
+      }
+
+      try {
+        const safeSlug =
+          (currentSnap.profile.name || 'ASD')
+            .trim()
+            .replace(/[^a-zA-Z0-9_-]+/g, '_')
+            .replace(/^_+|_+$/g, '') || 'ASD';
+        const backupFileName = `Backup_Automatico_${reason}_${safeSlug}_${currentSnap.profile.activeYear}_${todayIso()}.json`;
+        downloadLocalDatabaseFile(backupFileName, exportBackupJSON(currentSnap));
+        performAction();
+      } catch (err) {
+        console.warn(`Pre-action local backup (${reason}) failed:`, err);
+        setBackupFailurePrompt({
+          isOpen: true,
+          actionLabel,
+          onProceedAnyway: performAction,
+        });
+      }
+    },
+    []
+  );
+
   // Push current state to Google Drive immediately (and trigger daily automatic backup if not yet done today)
   const pushStateToGoogleDriveNow = useCallback(async (stateToPush: AppState, email: string) => {
     const jsonStr = serializeAppStateCompact(stateToPush);
     const assocId = deriveAssociationId(stateToPush.profile);
+    if ((stateToPush.version || 1) > maxKnownVersionRef.current) {
+      maxKnownVersionRef.current = stateToPush.version || 1;
+    }
     setDriveSyncState('saving');
     try {
       const uploaded = await saveLiveDatabaseToDrive(
         jsonStr,
         liveDriveFileIdRef.current,
-        { associationId: assocId }
+        {
+          associationId: assocId,
+          expectedDriveVersion: knownDriveVersionRef.current,
+        }
       );
       liveDriveFileIdRef.current = uploaded.id;
+      if (uploaded.version) {
+        knownDriveVersionRef.current = String(uploaded.version);
+      }
       lastSavedJsonRef.current = jsonStr;
       await saveLocalSnapshot(email, stateToPush, stateToPush.version || 1);
       await updateLastSyncedVersion(email, stateToPush.version || 1);
@@ -294,6 +381,35 @@ export default function App() {
         void createDriveBackupSnapshot(stateToPush, 'daily').catch(() => {});
       }
     } catch (err: any) {
+      // Blocco 1.1: Remote file was modified on another device since our last load/save
+      if (err?.message === 'REMOTE_CHANGED') {
+        driveSaveQueueRef.current?.cancelPending();
+        if (liveDriveFileIdRef.current) {
+          try {
+            const loaded = await loadLiveDatabaseFileById(liveDriveFileIdRef.current, assocId);
+            if (loaded && loaded.content) {
+              const parsedRemote = parseBackupJSON(loaded.content);
+              if (parsedRemote) {
+                if (loaded.driveVersion) {
+                  knownDriveVersionRef.current = String(loaded.driveVersion);
+                }
+                if ((parsedRemote.version || 1) > maxKnownVersionRef.current) {
+                  maxKnownVersionRef.current = parsedRemote.version || 1;
+                }
+                setSyncConflictModal({
+                  isOpen: true,
+                  remoteState: parsedRemote,
+                  selectedCandidateId: liveDriveFileIdRef.current,
+                });
+                setDriveSyncState('idle');
+                return;
+              }
+            }
+          } catch (loadErr) {
+            console.warn('Errore caricamento versione remota durante conflitto:', loadErr);
+          }
+        }
+      }
       if (err?.message === 'AUTH_REQUIRED') {
         setDriveAuthExpiredNotice(true);
       }
@@ -316,31 +432,25 @@ export default function App() {
     );
   }
 
-  // Flush pending Drive saves when tab becomes hidden or before unload
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        void driveSaveQueueRef.current?.flush();
-      }
-    };
-    const handleBeforeUnload = () => {
-      void driveSaveQueueRef.current?.flush();
-    };
-    window.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => {
-      window.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, []);
-
   // Apply remote state cleanly into memory & IndexedDB without triggering a save loop
   const applyRemoteStateLocally = useCallback(
-    async (remoteState: AppState, email: string, modifiedTime?: string) => {
+    async (
+      remoteState: AppState,
+      email: string,
+      modifiedTime?: string,
+      driveVersion?: string | null
+    ) => {
       isHydratingFromDriveRef.current = true;
+      if (driveVersion !== undefined) {
+        knownDriveVersionRef.current = driveVersion ? String(driveVersion) : null;
+      }
+      if ((remoteState.version || 1) > maxKnownVersionRef.current) {
+        maxKnownVersionRef.current = remoteState.version || 1;
+      }
       const jsonStr = serializeAppStateCompact(remoteState);
       lastSavedJsonRef.current = jsonStr;
       lastBusinessSignatureRef.current = getBusinessPayloadSignature(remoteState);
+      appStateRef.current = remoteState;
       setAppState(remoteState);
       await saveLocalSnapshot(email, remoteState, remoteState.version || 1);
       setDriveAuthExpiredNotice(false);
@@ -385,6 +495,10 @@ export default function App() {
           localCandidate = idbRecord.state;
         }
 
+        if (localCandidate && (localCandidate.version || 1) > maxKnownVersionRef.current) {
+          maxKnownVersionRef.current = localCandidate.version || 1;
+        }
+
         const remoteDb = await loadLiveDatabaseFromDrive({
           knownRootFolderId:
             localCandidate?.profile?.driveRootFolderId ||
@@ -399,6 +513,12 @@ export default function App() {
 
         if (remoteDb?.fileId) {
           liveDriveFileIdRef.current = remoteDb.fileId;
+        }
+        if (remoteDb?.driveVersion) {
+          knownDriveVersionRef.current = String(remoteDb.driveVersion);
+        }
+        if (remoteState && (remoteState.version || 1) > maxKnownVersionRef.current) {
+          maxKnownVersionRef.current = remoteState.version || 1;
         }
 
         // If multiple database_gestionale_asd.json files were found on Drive, let user inspect/confirm
@@ -418,13 +538,19 @@ export default function App() {
 
         // Safety fast-paths when one side is completely empty (0 records) and the other has data
         if (remoteState && remoteCount > 0 && localCount === 0) {
-          await applyRemoteStateLocally(remoteState, email, remoteDb?.modifiedTime);
+          await applyRemoteStateLocally(
+            remoteState,
+            email,
+            remoteDb?.modifiedTime,
+            remoteDb?.driveVersion
+          );
           return;
         }
         if (localCandidate && localCount > 0 && (!remoteState || remoteCount === 0)) {
           if (localCandidate !== inMemoryState) {
             isHydratingFromDriveRef.current = true;
             lastBusinessSignatureRef.current = getBusinessPayloadSignature(localCandidate);
+            appStateRef.current = localCandidate;
             setAppState(localCandidate);
             setTimeout(() => {
               isHydratingFromDriveRef.current = false;
@@ -441,7 +567,12 @@ export default function App() {
         );
 
         if (decision === 'use-remote' && remoteState) {
-          await applyRemoteStateLocally(remoteState, email, remoteDb?.modifiedTime);
+          await applyRemoteStateLocally(
+            remoteState,
+            email,
+            remoteDb?.modifiedTime,
+            remoteDb?.driveVersion
+          );
           return;
         }
 
@@ -450,6 +581,7 @@ export default function App() {
           if (stateToUpload !== inMemoryState) {
             isHydratingFromDriveRef.current = true;
             lastBusinessSignatureRef.current = getBusinessPayloadSignature(stateToUpload);
+            appStateRef.current = stateToUpload;
             setAppState(stateToUpload);
             setTimeout(() => {
               isHydratingFromDriveRef.current = false;
@@ -461,7 +593,12 @@ export default function App() {
 
         if (decision === 'noop') {
           const syncedState = remoteState || localCandidate || inMemoryState;
-          await applyRemoteStateLocally(syncedState, email, remoteDb?.modifiedTime);
+          await applyRemoteStateLocally(
+            syncedState,
+            email,
+            remoteDb?.modifiedTime,
+            remoteDb?.driveVersion
+          );
           if (
             remoteCount === 0 &&
             localCount === 0 &&
@@ -477,6 +614,7 @@ export default function App() {
           if (localCandidate !== inMemoryState) {
             isHydratingFromDriveRef.current = true;
             lastBusinessSignatureRef.current = getBusinessPayloadSignature(localCandidate);
+            appStateRef.current = localCandidate;
             setAppState(localCandidate);
             setTimeout(() => {
               isHydratingFromDriveRef.current = false;
@@ -497,6 +635,8 @@ export default function App() {
         }
         console.warn('Background Drive sync notice:', err);
         setDriveSyncState('error');
+      } finally {
+        setIsStartupResolved(true);
       }
     },
     [applyRemoteStateLocally, getBusinessPayloadSignature, pushStateToGoogleDriveNow]
@@ -538,15 +678,23 @@ export default function App() {
       }
       const currentLocal = appStateRef.current;
       const nextVersion =
-        Math.max(currentLocal.version || 1, remoteState?.version || 1) + 1;
+        Math.max(
+          currentLocal.version || 1,
+          remoteState?.version || 1,
+          maxKnownVersionRef.current
+        ) + 1;
+      maxKnownVersionRef.current = nextVersion;
       const bumpedLocal: AppState = {
         ...currentLocal,
         version: nextVersion,
         updatedAt: new Date().toISOString(),
         updatedBy: email,
       };
+      // User explicitly chose to overwrite the remote file in conflict modal
+      knownDriveVersionRef.current = null;
       isHydratingFromDriveRef.current = true;
       lastBusinessSignatureRef.current = getBusinessPayloadSignature(bumpedLocal);
+      appStateRef.current = bumpedLocal;
       setAppState(bumpedLocal);
       setTimeout(() => {
         isHydratingFromDriveRef.current = false;
@@ -568,6 +716,12 @@ export default function App() {
           const parsed = parseBackupJSON(loaded.content);
           if (parsed) {
             liveDriveFileIdRef.current = fileId;
+            if (loaded.driveVersion) {
+              knownDriveVersionRef.current = String(loaded.driveVersion);
+            }
+            if ((parsed.version || 1) > maxKnownVersionRef.current) {
+              maxKnownVersionRef.current = parsed.version || 1;
+            }
             setSyncConflictModal((prev) => ({
               ...prev,
               remoteState: parsed,
@@ -585,23 +739,66 @@ export default function App() {
     []
   );
 
-  // Initialize Google Workspace Auth listener
+  // Blocco 1.3 & 1.4: Migrate legacy localStorage snapshots first, then initialize Google Auth
+  // and load snapshot:local if no Google session is active before enabling the autosave effect.
   useEffect(() => {
-    const unsubscribe = initAuth(
-      (user) => {
-        const email = user.email || user.displayName || 'Account Google Connesso';
-        setGoogleUserEmail(email);
-        setDriveAuthExpiredNotice(false);
-      },
-      () => {
-        setGoogleUserEmail(null);
-        setDriveSyncState('idle');
-        setLastDriveSavedAt(null);
-        liveDriveFileIdRef.current = undefined;
-      }
-    );
-    return () => unsubscribe();
-  }, []);
+    let isCancelled = false;
+    let unsubscribeAuth: (() => void) | null = null;
+
+    (async () => {
+      await migrateLegacyLocalStorageSnapshots(hydrateAppState);
+      if (isCancelled) return;
+
+      unsubscribeAuth = initAuth(
+        (user) => {
+          if (isCancelled) return;
+          const email = user.email || user.displayName || 'Account Google Connesso';
+          setGoogleUserEmail(email);
+          setDriveAuthExpiredNotice(false);
+        },
+        async () => {
+          if (isCancelled) return;
+          setGoogleUserEmail(null);
+          setDriveSyncState('idle');
+          setLastDriveSavedAt(null);
+          liveDriveFileIdRef.current = undefined;
+          knownDriveVersionRef.current = null;
+
+          // Load local unauthenticated snapshot from IndexedDB without bumping version
+          try {
+            const localRecord = await loadLocalSnapshotRecord('local');
+            if (!isCancelled && localRecord?.state) {
+              isHydratingFromDriveRef.current = true;
+              const restoredLocal = hydrateAppState(
+                localRecord.state,
+                localRecord.state.profile?.activeYear || 2027
+              );
+              if ((restoredLocal.version || 1) > maxKnownVersionRef.current) {
+                maxKnownVersionRef.current = restoredLocal.version || 1;
+              }
+              lastBusinessSignatureRef.current = getBusinessPayloadSignature(restoredLocal);
+              appStateRef.current = restoredLocal;
+              setAppState(restoredLocal);
+              setTimeout(() => {
+                isHydratingFromDriveRef.current = false;
+              }, 100);
+            }
+          } catch (err) {
+            console.warn('Impossibile caricare snapshot:local all\'avvio:', err);
+          } finally {
+            if (!isCancelled) {
+              setIsStartupResolved(true);
+            }
+          }
+        }
+      );
+    })();
+
+    return () => {
+      isCancelled = true;
+      if (unsubscribeAuth) unsubscribeAuth();
+    };
+  }, [getBusinessPayloadSignature]);
 
   // When the connected Google profile changes, sync with that Google account's Drive ("Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json")
   useEffect(() => {
@@ -614,17 +811,26 @@ export default function App() {
 
   // Auto-save in real time on every change to Local IndexedDB, Local PC File, and Google Drive (via SaveQueue)
   useEffect(() => {
-    if (isHydratingFromDriveRef.current || syncConflictModal.isOpen) return;
+    // Blocco 1.3: Do not write anything until startup resolution has finished loading Drive or snapshot:local
+    if (!isStartupResolved || isHydratingFromDriveRef.current || syncConflictModal.isOpen) return;
 
     const currentSignature = getBusinessPayloadSignature(appState);
     const hasBusinessDataChanged = currentSignature !== lastBusinessSignatureRef.current;
 
-    // If business data changed, bump version + updatedAt + updatedBy
+    // If business data changed, bump version (using maxKnownVersionRef floor) + updatedAt + updatedBy
     let effectiveState = appState;
     if (hasBusinessDataChanged) {
       lastBusinessSignatureRef.current = currentSignature;
-      effectiveState = bumpStateVersion(appState, googleUserEmail);
+      effectiveState = bumpStateVersion(
+        appState,
+        googleUserEmail,
+        maxKnownVersionRef.current
+      );
+      if ((effectiveState.version || 1) > maxKnownVersionRef.current) {
+        maxKnownVersionRef.current = effectiveState.version || 1;
+      }
       isHydratingFromDriveRef.current = true;
+      appStateRef.current = effectiveState;
       setAppState(effectiveState);
       setTimeout(() => {
         isHydratingFromDriveRef.current = false;
@@ -636,8 +842,12 @@ export default function App() {
       hasUnsavedPreLoginEditsRef.current = true;
     }
 
-    // Persist account-scoped snapshot in IndexedDB
-    saveAppState(effectiveState, googleUserEmail || 'local');
+    // Blocco 1.3: Persist account-scoped snapshot in IndexedDB (never write snapshot:local when logged in with Google)
+    if (googleUserEmail) {
+      saveAppState(effectiveState, googleUserEmail);
+    } else {
+      saveAppState(effectiveState, 'local');
+    }
 
     // If a local PC file handle is connected via File System Access API, write indented JSON to it
     if (localFileHandleRef.current) {
@@ -661,13 +871,133 @@ export default function App() {
 
     // Enqueue into the serialized 2000ms debounced Drive save queue
     driveSaveQueueRef.current?.enqueue(effectiveState);
-  }, [appState, googleUserEmail, getBusinessPayloadSignature, syncConflictModal.isOpen]);
+  }, [
+    appState,
+    googleUserEmail,
+    getBusinessPayloadSignature,
+    isStartupResolved,
+    syncConflictModal.isOpen,
+  ]);
 
-  // Periodic Automatic Google Drive Sync Timer (every 90 seconds) to ensure any pending state is flushed
+  // Blocco 1.1: Check remote Drive file version on periodic 60s poll and when tab returns to foreground
+  const checkRemoteDriveUpdates = useCallback(async () => {
+    const email = googleUserEmailRef.current;
+    const fileId = liveDriveFileIdRef.current;
+    if (
+      !email ||
+      !fileId ||
+      isHydratingFromDriveRef.current ||
+      syncConflictModal.isOpen ||
+      driveSaveQueueRef.current?.getStatus() === 'saving'
+    ) {
+      return;
+    }
+
+    try {
+      const meta = await checkDriveFileVersion(fileId);
+      if (!meta || meta.trashed) return;
+
+      const currentState = appStateRef.current;
+      const currentCompact = serializeAppStateCompact(currentState);
+      const hasLocalPending =
+        driveSaveQueueRef.current?.getStatus() === 'pending' ||
+        (lastSavedJsonRef.current !== '' && currentCompact !== lastSavedJsonRef.current);
+
+      const action = decideSaveAction({
+        knownDriveVersion: knownDriveVersionRef.current,
+        currentDriveVersion: meta.version,
+        hasLocalPending,
+      });
+
+      if (action === 'pull-remote') {
+        const assocId = deriveAssociationId(currentState.profile);
+        const loaded = await loadLiveDatabaseFileById(fileId, assocId);
+        if (loaded && loaded.content) {
+          const parsedRemote = parseBackupJSON(loaded.content);
+          if (parsedRemote) {
+            await applyRemoteStateLocally(
+              parsedRemote,
+              email,
+              loaded.modifiedTime || meta.modifiedTime,
+              loaded.driveVersion || meta.version
+            );
+            setRemoteUpdatedNotice('Dati aggiornati da un altro dispositivo');
+            setTimeout(() => {
+              setRemoteUpdatedNotice((prev) =>
+                prev === 'Dati aggiornati da un altro dispositivo' ? null : prev
+              );
+            }, 6000);
+          }
+        }
+        return;
+      }
+
+      if (action === 'conflict') {
+        driveSaveQueueRef.current?.cancelPending();
+        const assocId = deriveAssociationId(currentState.profile);
+        const loaded = await loadLiveDatabaseFileById(fileId, assocId);
+        if (loaded && loaded.content) {
+          const parsedRemote = parseBackupJSON(loaded.content);
+          if (parsedRemote) {
+            knownDriveVersionRef.current =
+              loaded.driveVersion || meta.version || knownDriveVersionRef.current;
+            if ((parsedRemote.version || 1) > maxKnownVersionRef.current) {
+              maxKnownVersionRef.current = parsedRemote.version || 1;
+            }
+            setSyncConflictModal({
+              isOpen: true,
+              remoteState: parsedRemote,
+              selectedCandidateId: fileId,
+            });
+            setDriveSyncState('idle');
+          }
+        }
+        return;
+      }
+
+      if (action === 'write') {
+        if (driveSaveQueueRef.current?.getStatus() === 'pending') {
+          await driveSaveQueueRef.current.flush();
+        } else if (currentCompact !== lastSavedJsonRef.current) {
+          driveSaveQueueRef.current?.enqueue(currentState);
+        }
+      }
+    } catch (err: any) {
+      if (err?.message === 'AUTH_REQUIRED') {
+        setDriveAuthExpiredNotice(true);
+      }
+    }
+  }, [applyRemoteStateLocally, syncConflictModal.isOpen]);
+
+  // Flush pending Drive saves when tab becomes hidden or before unload; check remote version when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        void driveSaveQueueRef.current?.flush();
+      } else if (document.visibilityState === 'visible') {
+        void checkRemoteDriveUpdates();
+      }
+    };
+    const handleBeforeUnload = () => {
+      void driveSaveQueueRef.current?.flush();
+    };
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [checkRemoteDriveUpdates]);
+
+  // Periodic Automatic Google Drive Sync & Remote Change Poll (every 60 seconds)
   useEffect(() => {
     if (!googleUserEmail) return;
     const interval = setInterval(async () => {
       if (isHydratingFromDriveRef.current || syncConflictModal.isOpen) return;
+      if (liveDriveFileIdRef.current) {
+        await checkRemoteDriveUpdates();
+        return;
+      }
       if (driveSaveQueueRef.current?.getStatus() === 'pending') {
         await driveSaveQueueRef.current.flush();
         return;
@@ -677,11 +1007,11 @@ export default function App() {
       if (currentCompactJson !== lastSavedJsonRef.current || !liveDriveFileIdRef.current) {
         driveSaveQueueRef.current?.enqueue(currentState);
       }
-    }, 90_000);
+    }, 60_000);
     return () => clearInterval(interval);
-  }, [googleUserEmail, syncConflictModal.isOpen]);
+  }, [checkRemoteDriveUpdates, googleUserEmail, syncConflictModal.isOpen]);
 
-  // Connect / Open a Local PC .json File (OneDrive / Dropbox / Hard Disk)
+  // Blocco 1.7: Connect / Open a Local PC .json File -> show confirmation dialog with summary first
   const handleConnectLocalFile = async () => {
     if (isFileSystemAccessSupported()) {
       try {
@@ -689,12 +1019,12 @@ export default function App() {
         if (res) {
           const parsed = parseBackupJSON(res.content);
           if (parsed) {
-            localFileHandleRef.current = res.handle;
-            setLocalFileName(res.fileName);
-            setAppState(parsed);
-            setLastLocalSavedAt(
-              new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
-            );
+            setPendingLocalFileOpenModal({
+              isOpen: true,
+              fileName: res.fileName,
+              parsedState: parsed,
+              handle: res.handle,
+            });
             return;
           }
         }
@@ -713,15 +1043,48 @@ export default function App() {
       const content = ev.target?.result as string;
       const parsed = parseBackupJSON(content);
       if (parsed) {
-        setLocalFileName(file.name);
-        setAppState(parsed);
-        setLastLocalSavedAt(
-          new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
-        );
+        setPendingLocalFileOpenModal({
+          isOpen: true,
+          fileName: file.name,
+          parsedState: parsed,
+        });
       }
     };
     reader.readAsText(file);
     e.target.value = '';
+  };
+
+  const confirmPendingLocalFileOpen = async () => {
+    if (!pendingLocalFileOpenModal) return;
+    const { fileName, parsedState, handle } = pendingLocalFileOpenModal;
+    setPendingLocalFileOpenModal(null);
+
+    await runWithGuaranteedPreActionBackup(
+      'pre-overwrite',
+      `Apertura file locale "${fileName}"`,
+      () => {
+        if (handle) {
+          localFileHandleRef.current = handle;
+        }
+        setLocalFileName(fileName);
+        const bumped = bumpStateVersion(
+          parsedState,
+          googleUserEmailRef.current,
+          maxKnownVersionRef.current
+        );
+        maxKnownVersionRef.current = Math.max(
+          maxKnownVersionRef.current,
+          bumped.version || 1,
+          parsedState.version || 1
+        );
+        lastBusinessSignatureRef.current = getBusinessPayloadSignature(bumped);
+        appStateRef.current = bumped;
+        setAppState(bumped);
+        setLastLocalSavedAt(
+          new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+        );
+      }
+    );
   };
 
   // Save immediately to Local PC .json File
@@ -766,6 +1129,7 @@ export default function App() {
   };
 
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState<boolean>(false);
+  const [logoutUnsavedWarning, setLogoutUnsavedWarning] = useState<boolean>(false);
 
   const handleGoogleSignIn = async (forceConsent: boolean = false) => {
     try {
@@ -780,28 +1144,53 @@ export default function App() {
   };
 
   const handleGoogleLogout = async () => {
+    setLogoutUnsavedWarning(false);
     setIsLogoutModalOpen(true);
   };
 
+  // Blocco 1.5: Verify Drive flush succeeded before wiping local data on logout
   const confirmGoogleLogout = async (wipeLocalData: boolean) => {
     const emailToClear = googleUserEmail;
-    setIsLogoutModalOpen(false);
+    let flushFailed = false;
     try {
       await driveSaveQueueRef.current?.flush();
     } catch {
-      // ignore flush errors on logout
+      flushFailed = true;
     }
+
+    if (wipeLocalData) {
+      const queueStatus = driveSaveQueueRef.current?.getStatus();
+      const currentCompact = serializeAppStateCompact(appStateRef.current);
+      const hasUnsavedToDrive =
+        flushFailed ||
+        queueStatus === 'error' ||
+        queueStatus === 'pending' ||
+        queueStatus === 'saving' ||
+        (countAppStateRecords(appStateRef.current) > 0 &&
+          currentCompact !== lastSavedJsonRef.current);
+
+      if (hasUnsavedToDrive) {
+        setLogoutUnsavedWarning(true);
+        setIsLogoutModalOpen(true);
+        return;
+      }
+    }
+
+    setLogoutUnsavedWarning(false);
+    setIsLogoutModalOpen(false);
     await logout();
     setGoogleUserEmail(null);
     setDriveSyncState('idle');
     setLastDriveSavedAt(null);
     liveDriveFileIdRef.current = undefined;
+    knownDriveVersionRef.current = null;
 
     if (wipeLocalData) {
       await clearLocalAccountData(emailToClear);
       const cleanState = resetToEmpty2027(null);
       isHydratingFromDriveRef.current = true;
       appStateRef.current = cleanState;
+      maxKnownVersionRef.current = cleanState.version || 1;
       lastBusinessSignatureRef.current = getBusinessPayloadSignature(cleanState);
       lastSavedJsonRef.current = '';
       undoStackRef.current = [];
@@ -920,63 +1309,112 @@ export default function App() {
   const redoStackRef = useRef<{ state: AppState; label: string }[]>([]);
   const lastActionTimestampRef = useRef<number>(0);
 
-  const applyAction = useCallback((label: string, updater: (prev: AppState) => AppState) => {
-    const prev = appStateRef.current;
-    const next = updater(prev);
-    if (next === prev) return;
+  const applyAction = useCallback(
+    (label: string, updater: (prev: AppState) => AppState) => {
+      const prev = appStateRef.current;
+      const rawNext = updater(prev);
+      if (rawNext === prev) return;
 
-    const now = Date.now();
-    // Coalesce sub-actions fired synchronously within the same UI click (<50ms) into a single atomic Undo entry
-    const isCompositeSubAction = now - lastActionTimestampRef.current < 50;
-    lastActionTimestampRef.current = now;
+      if ((prev.version || 1) > maxKnownVersionRef.current) {
+        maxKnownVersionRef.current = prev.version || 1;
+      }
+      if ((rawNext.version || 1) > maxKnownVersionRef.current) {
+        maxKnownVersionRef.current = rawNext.version || 1;
+      }
 
-    if (!isCompositeSubAction) {
-      const nextUndo = [{ state: prev, label }, ...undoStackRef.current].slice(0, 30);
-      undoStackRef.current = nextUndo;
-      setUndoStack(nextUndo);
-      redoStackRef.current = [];
-      setRedoStack([]);
-    }
+      const now = Date.now();
+      // Coalesce sub-actions fired synchronously within the same UI click (<50ms) into a single atomic Undo entry
+      const isCompositeSubAction = now - lastActionTimestampRef.current < 50;
+      lastActionTimestampRef.current = now;
 
-    appStateRef.current = next;
-    setAppState(next);
-  }, []);
+      if (!isCompositeSubAction) {
+        const nextUndo = [{ state: prev, label }, ...undoStackRef.current].slice(0, 30);
+        undoStackRef.current = nextUndo;
+        setUndoStack(nextUndo);
+        redoStackRef.current = [];
+        setRedoStack([]);
+      }
+
+      // Blocco 1.6: Ensure any state transition (including Restore or Reset) never carries a version lower than maxKnownVersionRef
+      const bumpedNext = bumpStateVersion(
+        rawNext,
+        googleUserEmailRef.current,
+        maxKnownVersionRef.current
+      );
+      maxKnownVersionRef.current = Math.max(
+        maxKnownVersionRef.current,
+        bumpedNext.version || 1
+      );
+      lastBusinessSignatureRef.current = getBusinessPayloadSignature(bumpedNext);
+      appStateRef.current = bumpedNext;
+      setAppState(bumpedNext);
+    },
+    [getBusinessPayloadSignature]
+  );
 
   const handleUndo = useCallback(() => {
     const currentUndo = undoStackRef.current;
     if (currentUndo.length === 0) return;
     const [latest, ...rest] = currentUndo;
     const currentSnap = appStateRef.current;
+    if ((currentSnap.version || 1) > maxKnownVersionRef.current) {
+      maxKnownVersionRef.current = currentSnap.version || 1;
+    }
     const nextRedo = [{ state: currentSnap, label: latest.label }, ...redoStackRef.current].slice(
       0,
       30
     );
+    // Blocco 1.6: Bump undone state to maxKnownVersion + 1 so it never looks older than remote Drive state
+    const bumpedUndoState = bumpStateVersion(
+      latest.state,
+      googleUserEmailRef.current,
+      maxKnownVersionRef.current
+    );
+    maxKnownVersionRef.current = Math.max(
+      maxKnownVersionRef.current,
+      bumpedUndoState.version || 1
+    );
+    lastBusinessSignatureRef.current = getBusinessPayloadSignature(bumpedUndoState);
     undoStackRef.current = rest;
     redoStackRef.current = nextRedo;
-    appStateRef.current = latest.state;
+    appStateRef.current = bumpedUndoState;
     setUndoStack(rest);
     setRedoStack(nextRedo);
     setTargetDuplicateTxIds([]);
-    setAppState(latest.state);
-  }, []);
+    setAppState(bumpedUndoState);
+  }, [getBusinessPayloadSignature]);
 
   const handleRedo = useCallback(() => {
     const currentRedo = redoStackRef.current;
     if (currentRedo.length === 0) return;
     const [latest, ...rest] = currentRedo;
     const currentSnap = appStateRef.current;
+    if ((currentSnap.version || 1) > maxKnownVersionRef.current) {
+      maxKnownVersionRef.current = currentSnap.version || 1;
+    }
     const nextUndo = [{ state: currentSnap, label: latest.label }, ...undoStackRef.current].slice(
       0,
       30
     );
+    // Blocco 1.6: Bump redone state to maxKnownVersion + 1
+    const bumpedRedoState = bumpStateVersion(
+      latest.state,
+      googleUserEmailRef.current,
+      maxKnownVersionRef.current
+    );
+    maxKnownVersionRef.current = Math.max(
+      maxKnownVersionRef.current,
+      bumpedRedoState.version || 1
+    );
+    lastBusinessSignatureRef.current = getBusinessPayloadSignature(bumpedRedoState);
     redoStackRef.current = rest;
     undoStackRef.current = nextUndo;
-    appStateRef.current = latest.state;
+    appStateRef.current = bumpedRedoState;
     setRedoStack(rest);
     setUndoStack(nextUndo);
     setTargetDuplicateTxIds([]);
-    setAppState(latest.state);
-  }, []);
+    setAppState(bumpedRedoState);
+  }, [getBusinessPayloadSignature]);
 
   // Global keyboard shortcuts: Ctrl+Z / Cmd+Z for Undo, Ctrl+Y / Cmd+Shift+Z for Redo
   useEffect(() => {
@@ -1044,10 +1482,9 @@ export default function App() {
 
   const handleDeleteTransaction = (id: string) => {
     setTargetDuplicateTxIds((prev) => prev.filter((item) => item !== id));
-    applyAction('Eliminazione movimento cassa', (prev) => ({
-      ...prev,
-      transactions: prev.transactions.filter((t) => t.id !== id),
-    }));
+    applyAction('Eliminazione movimento cassa', (prev) =>
+      deleteTransactionsFromState(prev, [id])
+    );
   };
 
   const handleDeleteMultipleTransactions = (ids: string[]) => {
@@ -1055,10 +1492,9 @@ export default function App() {
     triggerPreActionDriveBackup('pre-bulk-delete');
     const idSet = new Set(ids);
     setTargetDuplicateTxIds((prev) => prev.filter((item) => !idSet.has(item)));
-    applyAction(`Eliminazione ${ids.length} movimenti`, (prev) => ({
-      ...prev,
-      transactions: prev.transactions.filter((t) => !idSet.has(t.id)),
-    }));
+    applyAction(`Eliminazione ${ids.length} movimenti`, (prev) =>
+      deleteTransactionsFromState(prev, ids)
+    );
   };
 
   const handleLoadSampleDuplicates = () => {
@@ -1084,37 +1520,46 @@ export default function App() {
     mode: 'append' | 'replace',
     newFunds?: { initialFund: number; initialFundBank: number; initialFundCash: number }
   ) => {
-    triggerPreActionDriveBackup('pre-import');
     const label =
       txs.length === 0 && mode === 'replace'
         ? 'Azzeramento cassa'
         : `Importazione ${txs.length} movimenti`;
-    const importedIds = txs.map((t) => t.id);
-    // Run duplicate check once on the newly imported dataset
-    setTargetDuplicateTxIds(importedIds);
-    applyAction(label, (prev) => ({
-      ...prev,
-      transactions: mode === 'replace' ? txs : [...txs, ...prev.transactions],
-      ...(newFunds
-        ? {
-            initialFund: newFunds.initialFund,
-            initialFundBank: newFunds.initialFundBank,
-            initialFundCash: newFunds.initialFundCash,
-          }
-        : {}),
-    }));
-    const current = appStateRef.current;
-    const foundOnImport = detectDuplicatesForNewTransactions(
-      importedIds,
-      current.transactions,
-      current.members,
-      current.staff,
-      7,
-      current.profile.ignoredDuplicateSignatures || [],
-      current.profile.duplicateDetectionMode || 'strict'
-    );
-    if (foundOnImport.length > 0) {
-      setIsDuplicatesModalOpen(true);
+
+    const executeImport = () => {
+      const importedIds = txs.map((t) => t.id);
+      // Run duplicate check once on the newly imported dataset
+      setTargetDuplicateTxIds(importedIds);
+      applyAction(label, (prev) => ({
+        ...prev,
+        transactions: mode === 'replace' ? txs : [...txs, ...prev.transactions],
+        ...(newFunds
+          ? {
+              initialFund: newFunds.initialFund,
+              initialFundBank: newFunds.initialFundBank,
+              initialFundCash: newFunds.initialFundCash,
+            }
+          : {}),
+      }));
+      const current = appStateRef.current;
+      const foundOnImport = detectDuplicatesForNewTransactions(
+        importedIds,
+        current.transactions,
+        current.members,
+        current.staff,
+        7,
+        current.profile.ignoredDuplicateSignatures || [],
+        current.profile.duplicateDetectionMode || 'strict'
+      );
+      if (foundOnImport.length > 0) {
+        setIsDuplicatesModalOpen(true);
+      }
+    };
+
+    if (mode === 'replace') {
+      void runWithGuaranteedPreActionBackup('pre-import', label, executeImport);
+    } else {
+      triggerPreActionDriveBackup('pre-import');
+      executeImport();
     }
   };
 
@@ -1196,11 +1641,19 @@ export default function App() {
   };
 
   const handleImportMembers = (imported: Member[], mode: 'append' | 'replace') => {
-    triggerPreActionDriveBackup('pre-import');
-    applyAction(`Importazione ${imported.length} soci`, (prev) => ({
-      ...prev,
-      members: mode === 'replace' ? imported : [...imported, ...prev.members],
-    }));
+    const label = `Importazione ${imported.length} soci`;
+    const executeImport = () => {
+      applyAction(label, (prev) => ({
+        ...prev,
+        members: mode === 'replace' ? imported : [...imported, ...prev.members],
+      }));
+    };
+    if (mode === 'replace') {
+      void runWithGuaranteedPreActionBackup('pre-import', label, executeImport);
+    } else {
+      triggerPreActionDriveBackup('pre-import');
+      executeImport();
+    }
   };
 
   const handleUpdateMember = (updated: Member) => {
@@ -1211,20 +1664,7 @@ export default function App() {
   };
 
   const handleDeleteMember = (id: string) => {
-    // Phase 4.4: Deleting a member preserves all accounting transactions and unlinks memberId
-    applyAction('Eliminazione socio', (prev) => ({
-      ...prev,
-      members: prev.members.filter((m) => m.id !== id),
-      transactions: prev.transactions.map((t) =>
-        t.memberId === id ? { ...t, memberId: undefined } : t
-      ),
-      bookings: prev.bookings.map((b) =>
-        b.memberId === id ? { ...b, memberId: '' } : b
-      ),
-      gadgetOrders: prev.gadgetOrders.map((o) =>
-        o.memberId === id ? { ...o, memberId: undefined } : o
-      ),
-    }));
+    applyAction('Eliminazione socio', (prev) => deleteMemberFromState(prev, id));
   };
 
   // --- Handlers for Events & Bookings ---
@@ -1247,11 +1687,7 @@ export default function App() {
   };
 
   const handleDeleteEvent = (eventId: string) => {
-    applyAction('Eliminazione evento', (prev) => ({
-      ...prev,
-      events: prev.events.filter((e) => e.id !== eventId),
-      bookings: prev.bookings.filter((b) => b.eventId !== eventId),
-    }));
+    applyAction('Eliminazione evento', (prev) => deleteEventFromState(prev, eventId));
   };
 
   const handleAddBooking = (newBooking: Omit<EventBooking, 'id'>): EventBooking => {
@@ -1275,15 +1711,9 @@ export default function App() {
     bookingId: string,
     alsoDeleteLinkedTransactions: boolean = false
   ) => {
-    applyAction('Eliminazione iscrizione evento', (prev) => ({
-      ...prev,
-      bookings: prev.bookings.filter((b) => b.id !== bookingId),
-      transactions: alsoDeleteLinkedTransactions
-        ? prev.transactions.filter((t) => t.bookingId !== bookingId)
-        : prev.transactions.map((t) =>
-            t.bookingId === bookingId ? { ...t, bookingId: undefined } : t
-          ),
-    }));
+    applyAction('Eliminazione iscrizione evento', (prev) =>
+      deleteBookingFromState(prev, bookingId, alsoDeleteLinkedTransactions)
+    );
   };
 
   // --- Handlers for Grants (Bandi & Progetti) ---
@@ -1361,10 +1791,9 @@ export default function App() {
   };
 
   const handleDeleteGadgetOrder = (id: string) => {
-    applyAction('Eliminazione ordine gadget', (prev) => ({
-      ...prev,
-      gadgetOrders: prev.gadgetOrders.filter((o) => o.id !== id),
-    }));
+    applyAction('Eliminazione ordine gadget', (prev) =>
+      deleteGadgetOrderFromState(prev, id)
+    );
   };
 
   const handleImportGadgetOrders = (orders: GadgetOrder[]) => {
@@ -1430,6 +1859,12 @@ export default function App() {
     }));
   };
 
+  const handleDeleteStaffMember = (id: string) => {
+    applyAction('Eliminazione collaboratore staff', (prev) =>
+      deleteStaffMemberFromState(prev, id)
+    );
+  };
+
   const handleLinkLegacyStaffPayments = (
     links: {
       transactionId: string;
@@ -1462,8 +1897,41 @@ export default function App() {
     });
   };
 
-  const handleArchiveFiscalYear = (targetNewYear: number): ArchivedFiscalYear | null => {
-    triggerPreActionDriveBackup('pre-archive');
+  const handleArchiveFiscalYear = async (
+    targetNewYear: number
+  ): Promise<ArchivedFiscalYear | null> => {
+    const currentSnap = appStateRef.current;
+    if (countAppStateRecords(currentSnap) > 0) {
+      if (googleUserEmailRef.current) {
+        try {
+          await createDriveBackupSnapshot(currentSnap, 'pre-archive');
+        } catch (err) {
+          console.warn('Pre-archive Drive backup failed:', err);
+          const proceed = window.confirm(
+            'Backup non riuscito: vuoi procedere comunque con l\'archiviazione dell\'anno?'
+          );
+          if (!proceed) return null;
+        }
+      } else {
+        try {
+          const safeSlug =
+            (currentSnap.profile.name || 'ASD')
+              .trim()
+              .replace(/[^a-zA-Z0-9_-]+/g, '_')
+              .replace(/^_+|_+$/g, '') || 'ASD';
+          downloadLocalDatabaseFile(
+            `Backup_Automatico_pre-archive_${safeSlug}_${currentSnap.profile.activeYear}_${todayIso()}.json`,
+            exportBackupJSON(currentSnap)
+          );
+        } catch {
+          const proceed = window.confirm(
+            'Backup non riuscito: vuoi procedere comunque con l\'archiviazione dell\'anno?'
+          );
+          if (!proceed) return null;
+        }
+      }
+    }
+
     let archived: ArchivedFiscalYear | null = null;
     applyAction(`Archiviazione anno ${appStateRef.current.profile.activeYear}`, (prev) => {
       const { nextState, archivedRecord } = archiveFiscalYearState(prev, targetNewYear);
@@ -1514,14 +1982,16 @@ export default function App() {
   };
 
   const handleRestoreState = (restored: AppState) => {
-    triggerPreActionDriveBackup('pre-overwrite');
-    applyAction('Ripristino backup', () => restored);
+    void runWithGuaranteedPreActionBackup('pre-overwrite', 'Ripristino backup', () => {
+      applyAction('Ripristino backup', () => restored);
+    });
   };
 
   const handleResetToDefaults = () => {
-    triggerPreActionDriveBackup('pre-overwrite');
-    const empty2027 = resetToEmpty2027(googleUserEmail);
-    applyAction('Reset gestionale', () => empty2027);
+    void runWithGuaranteedPreActionBackup('pre-overwrite', 'Reset gestionale', () => {
+      const empty2027 = resetToEmpty2027(googleUserEmail);
+      applyAction('Reset gestionale', () => empty2027);
+    });
   };
 
   // Quick navigation helpers for receipts
@@ -1533,25 +2003,56 @@ export default function App() {
   };
 
   const openReceiptForBooking = (booking: EventBooking, member?: Member) => {
+    const resolvedMember =
+      member ||
+      (booking.memberId
+        ? appState.members.find((m) => m.id === booking.memberId)
+        : undefined);
     setReceiptModal({
       isOpen: true,
       booking,
-      member,
+      member: resolvedMember,
     });
   };
 
   const openReceiptForTransaction = (transaction: CashTransaction) => {
+    const resolvedBooking = transaction.bookingId
+      ? appState.bookings.find((b) => b.id === transaction.bookingId)
+      : undefined;
+    const resolvedGadgetOrder = transaction.gadgetOrderId
+      ? appState.gadgetOrders.find((g) => g.id === transaction.gadgetOrderId)
+      : undefined;
+    const targetMemberId =
+      transaction.memberId || resolvedBooking?.memberId || resolvedGadgetOrder?.memberId;
+    const resolvedMember = targetMemberId
+      ? appState.members.find((m) => m.id === targetMemberId)
+      : undefined;
+    const matchedReceipt = findExistingReceiptForContext(appState.receipts, {
+      receiptId: transaction.receiptId,
+      transactionId: transaction.id,
+      bookingId: transaction.bookingId,
+      gadgetOrderId: transaction.gadgetOrderId,
+    });
     setReceiptModal({
       isOpen: true,
       transaction,
+      booking: resolvedBooking,
+      gadgetOrder: resolvedGadgetOrder,
+      member: resolvedMember,
+      existingReceipt: matchedReceipt || null,
     });
   };
 
   const openReceiptForGadget = (gadgetOrder: GadgetOrder, member?: Member) => {
+    const resolvedMember =
+      member ||
+      (gadgetOrder.memberId
+        ? appState.members.find((m) => m.id === gadgetOrder.memberId)
+        : undefined);
     setReceiptModal({
       isOpen: true,
       gadgetOrder,
-      member,
+      member: resolvedMember,
     });
   };
 
@@ -1704,6 +2205,10 @@ export default function App() {
               initialFund: appState.initialFund,
               initialFundBank: appState.initialFundBank,
               initialFundCash: appState.initialFundCash,
+              initialFundPaypal: appState.profile.initialFundPaypal || 0,
+              paymentAccounts: appState.profile.paymentAccounts,
+              paypalExpenseSourceAccount: appState.profile.paypalExpenseSourceAccount,
+              customPaymentAccounts: appState.profile.customPaymentAccounts,
               fiscalYear: appState.profile.activeYear,
               associationName: appState.profile.name,
             })
@@ -1746,6 +2251,20 @@ export default function App() {
             onOpenFullManual={() => setIsFullManualOpen(true)}
             onCloseFullManual={() => setIsFullManualOpen(false)}
           />
+
+          {/* Banner if remote database was updated from another device and auto-pulled (Blocco 1.1) */}
+          {remoteUpdatedNotice && (
+            <div className="no-print mb-4 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs text-emerald-950 shadow-2xs">
+              <div className="font-semibold">{remoteUpdatedNotice}</div>
+              <button
+                type="button"
+                onClick={() => setRemoteUpdatedNotice(null)}
+                className="text-emerald-700 hover:text-emerald-950 font-bold"
+              >
+                Chiudi
+              </button>
+            </div>
+          )}
 
           {/* Banner if Google OAuth token expired while editing so user can reconnect in 1 click without losing anything */}
           {driveAuthExpiredNotice && (
@@ -1965,6 +2484,7 @@ export default function App() {
               onAddTransaction={handleAddTransaction}
               onAddStaffMember={handleAddStaffMember}
               onUpdateStaffMember={handleUpdateStaffMember}
+              onDeleteStaffMember={handleDeleteStaffMember}
               onLinkLegacyStaffPayments={handleLinkLegacyStaffPayments}
               onUpdateProfile={handleUpdateProfile}
             />
@@ -2074,46 +2594,244 @@ export default function App() {
         </main>
       </div>
 
-      {/* Phase 5.2: Logout Confirmation Modal with Local Data Wipe (Default: Yes) */}
+      {/* Phase 5.2 & Blocco 1.5: Logout Confirmation Modal with Unsaved Changes Protection */}
       {isLogoutModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+            {logoutUnsavedWarning ? (
+              <>
+                <div className="space-y-2">
+                  <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg bg-rose-100 text-rose-900 font-bold text-xs">
+                    <AlertTriangle className="w-4 h-4 text-rose-700" />
+                    <span>Ci sono modifiche non salvate su Google Drive</span>
+                  </div>
+                  <p className="text-xs text-slate-700 leading-relaxed">
+                    L&apos;ultimo salvataggio su Google Drive non è andato a buon fine (sessione
+                    scaduta o connessione assente). Se cancelli ora i dati locali da questo
+                    computer, le ultime modifiche andrebbero perse.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2 pt-2">
+                  <button
+                    type="button"
+                    autoFocus
+                    onClick={async () => {
+                      await handleGoogleSignIn(false);
+                      if (googleUserEmailRef.current) {
+                        try {
+                          await pushStateToGoogleDriveNow(
+                            appStateRef.current,
+                            googleUserEmailRef.current
+                          );
+                          setLogoutUnsavedWarning(false);
+                        } catch {
+                          // keep warning visible if save still fails
+                        }
+                      }
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition-colors shadow-xs"
+                  >
+                    Riconnetti e salva
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const safeSlug =
+                        (appStateRef.current.profile.name || 'ASD')
+                          .trim()
+                          .replace(/[^a-zA-Z0-9_-]+/g, '_')
+                          .replace(/^_+|_+$/g, '') || 'ASD';
+                      downloadLocalDatabaseFile(
+                        `Backup_${safeSlug}_${appStateRef.current.profile.activeYear}_${todayIso()}.json`,
+                        exportBackupJSON(appStateRef.current)
+                      );
+                    }}
+                    className="w-full py-2 px-4 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-900 font-bold text-xs border border-blue-200 transition-colors"
+                  >
+                    Scarica backup sul PC
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => confirmGoogleLogout(false)}
+                    className="w-full py-2 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs border border-slate-200 transition-colors"
+                  >
+                    Esci senza cancellare i dati
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLogoutUnsavedWarning(false);
+                      setIsLogoutModalOpen(false);
+                    }}
+                    className="w-full py-1.5 px-4 rounded-xl text-slate-500 hover:text-slate-800 font-medium text-xs transition-colors"
+                  >
+                    Annulla
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-1.5">
+                  <h3 className="text-base font-extrabold text-slate-900">
+                    Disconnessione Account Google
+                  </h3>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Vuoi cancellare i dati dell&apos;associazione da questo computer?{' '}
+                    <strong className="text-slate-800">(consigliato sui PC condivisi)</strong>
+                  </p>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    I dati salvati su Google Drive o nel tuo file <code className="font-mono">.json</code> non
+                    verranno toccati e saranno ricaricati automaticamente al prossimo accesso.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2 pt-2">
+                  <button
+                    type="button"
+                    autoFocus
+                    onClick={() => confirmGoogleLogout(true)}
+                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition-colors shadow-xs"
+                  >
+                    Sì, esci e cancella i dati da questo computer (Consigliato)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => confirmGoogleLogout(false)}
+                    className="w-full py-2 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs border border-slate-200 transition-colors"
+                  >
+                    No, esci mantenendo la copia locale su questo PC
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsLogoutModalOpen(false)}
+                    className="w-full py-1.5 px-4 rounded-xl text-slate-500 hover:text-slate-800 font-medium text-xs transition-colors"
+                  >
+                    Annulla
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Blocco 1.7: Local .JSON File Open Confirmation Modal */}
+      {pendingLocalFileOpenModal?.isOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="space-y-1.5">
               <h3 className="text-base font-extrabold text-slate-900">
-                Disconnessione Account Google
+                Conferma Apertura File Locale (.json)
               </h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Vuoi cancellare i dati dell&apos;associazione da questo computer?{' '}
-                <strong className="text-slate-800">(consigliato sui PC condivisi)</strong>
+                Stai per caricare il file{' '}
+                <strong className="font-mono text-slate-900">
+                  {pendingLocalFileOpenModal.fileName}
+                </strong>
+                . I dati attualmente aperti verranno sostituiti (previo salvataggio automatico di
+                un backup di sicurezza).
               </p>
-              <p className="text-[11px] text-slate-500 leading-relaxed">
-                I dati salvati su Google Drive o nel tuo file <code className="font-mono">.json</code> non
-                verranno toccati e saranno ricaricati automaticamente al prossimo accesso.
+            </div>
+
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-1.5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Nome Associazione:</span>
+                <strong className="text-slate-900">
+                  {pendingLocalFileOpenModal.parsedState.profile?.name || 'N/D'}
+                </strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Anno Sportivo Attivo:</span>
+                <strong className="font-mono text-slate-900">
+                  {pendingLocalFileOpenModal.parsedState.profile?.activeYear || 'N/D'}
+                </strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Numero Soci in Anagrafica:</span>
+                <strong className="font-mono text-emerald-700">
+                  {pendingLocalFileOpenModal.parsedState.members?.length || 0}
+                </strong>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Numero Movimenti di Cassa:</span>
+                <strong className="font-mono text-blue-700">
+                  {pendingLocalFileOpenModal.parsedState.transactions?.length || 0}
+                </strong>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPendingLocalFileOpenModal(null)}
+                className="py-2 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors"
+              >
+                Annulla
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => void confirmPendingLocalFileOpen()}
+                className="py-2 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition-colors shadow-xs"
+              >
+                Conferma e Apri File
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blocco 1.7: Pre-Action Backup Failure Confirmation Prompt */}
+      {backupFailurePrompt?.isOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-rose-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="space-y-1.5">
+              <h3 className="text-base font-extrabold text-rose-900">
+                Backup non riuscito: vuoi procedere comunque?
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Non è stato possibile completare il backup automatico su Google Drive prima
+                dell&apos;operazione <strong>{backupFailurePrompt.actionLabel}</strong>. Puoi
+                scaricare una copia di sicurezza sul PC oppure scegliere se procedere comunque.
               </p>
             </div>
 
             <div className="flex flex-col gap-2 pt-2">
               <button
                 type="button"
-                autoFocus
-                onClick={() => confirmGoogleLogout(true)}
-                className="w-full py-2.5 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition-colors shadow-xs"
+                onClick={() => {
+                  const safeSlug =
+                    (appStateRef.current.profile.name || 'ASD')
+                      .trim()
+                      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+                      .replace(/^_+|_+$/g, '') || 'ASD';
+                  downloadLocalDatabaseFile(
+                    `Backup_Emergenza_${safeSlug}_${appStateRef.current.profile.activeYear}_${todayIso()}.json`,
+                    exportBackupJSON(appStateRef.current)
+                  );
+                }}
+                className="w-full py-2 px-4 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-900 font-bold text-xs border border-blue-200 transition-colors"
               >
-                Sì, esci e cancella i dati da questo computer (Consigliato)
+                Scarica prima backup .JSON sul PC
               </button>
               <button
                 type="button"
-                onClick={() => confirmGoogleLogout(false)}
-                className="w-full py-2 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs border border-slate-200 transition-colors"
+                onClick={() => {
+                  const proceed = backupFailurePrompt.onProceedAnyway;
+                  setBackupFailurePrompt(null);
+                  proceed();
+                }}
+                className="w-full py-2 px-4 rounded-xl bg-rose-700 hover:bg-rose-800 text-white font-bold text-xs transition-colors"
               >
-                No, esci mantenendo la copia locale su questo PC
+                Procedi comunque
               </button>
               <button
                 type="button"
-                onClick={() => setIsLogoutModalOpen(false)}
+                onClick={() => setBackupFailurePrompt(null)}
                 className="w-full py-1.5 px-4 rounded-xl text-slate-500 hover:text-slate-800 font-medium text-xs transition-colors"
               >
-                Annulla
+                Annulla operazione
               </button>
             </div>
           </div>

@@ -207,6 +207,7 @@ export interface DriveFileItem {
   id: string;
   name: string;
   mimeType: string;
+  version?: string;
   webViewLink?: string;
   createdTime?: string;
   modifiedTime?: string;
@@ -222,7 +223,7 @@ export async function listDriveFiles(query?: string): Promise<DriveFileItem[]> {
   const q = query || 'trashed = false';
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
     q
-  )}&fields=files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,appProperties)&orderBy=modifiedTime desc&pageSize=100`;
+  )}&fields=files(id,name,mimeType,version,webViewLink,createdTime,modifiedTime,size,parents,appProperties)&orderBy=modifiedTime desc&pageSize=100`;
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
@@ -357,18 +358,21 @@ export async function ensureGestionaleDriveStructure(): Promise<{
 }
 
 /**
- * Patches custom appProperties on a Drive file without modifying its media content.
+ * Patches custom appProperties on a Drive file without modifying its media content,
+ * returning the updated file metadata (including the incremented `version`).
  */
 export async function patchDriveFileAppProperties(
   fileId: string,
-  appProperties: Record<string, string>
-): Promise<void> {
-  const token = await getAccessToken();
-  if (!token) return;
+  appProperties: Record<string, string>,
+  options?: { fetchImpl?: typeof fetch; accessTokenOverride?: string }
+): Promise<{ id: string; version?: string; modifiedTime?: string; appProperties?: Record<string, string> } | null> {
+  const token = options?.accessTokenOverride || (await getAccessToken());
+  if (!token) return null;
+  const fetchFn = options?.fetchImpl || fetch;
   try {
     const safeId = encodeURIComponent(fileId.trim());
-    await fetch(
-      `https://www.googleapis.com/drive/v3/files/${safeId}?fields=id,appProperties`,
+    const res = await fetchFn(
+      `https://www.googleapis.com/drive/v3/files/${safeId}?fields=id,version,modifiedTime,appProperties`,
       {
         method: 'PATCH',
         headers: {
@@ -378,9 +382,47 @@ export async function patchDriveFileAppProperties(
         body: JSON.stringify({ appProperties }),
       }
     );
+    if (!res.ok) return null;
+    return await res.json();
   } catch (err) {
     console.warn('Impossibile aggiornare appProperties sul file Drive:', err);
+    return null;
   }
+}
+
+/**
+ * Lightweight Drive metadata check (`fields=id,version,modifiedTime,trashed,appProperties`)
+ * used before writing and during periodic multi-device polling.
+ */
+export async function checkDriveFileVersion(
+  fileId: string,
+  options?: { fetchImpl?: typeof fetch; accessTokenOverride?: string }
+): Promise<{
+  id: string;
+  version?: string;
+  modifiedTime?: string;
+  trashed?: boolean;
+  appProperties?: Record<string, string>;
+} | null> {
+  const token = options?.accessTokenOverride || (await getAccessToken());
+  if (!token) return null;
+  const fetchFn = options?.fetchImpl || fetch;
+  const safeId = encodeURIComponent(fileId.trim());
+  const res = await fetchFn(
+    `https://www.googleapis.com/drive/v3/files/${safeId}?fields=id,version,modifiedTime,trashed,appProperties`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (res.status === 401) {
+    if (!options?.accessTokenOverride) {
+      cachedAccessToken = null;
+      saveSessionAccessToken(null);
+    }
+    throw new Error('AUTH_REQUIRED');
+  }
+  if (!res.ok) return null;
+  return await res.json();
 }
 
 /**
@@ -413,9 +455,12 @@ export async function uploadFileToDrive(params: {
   category?: DriveCategoryKey;
   existingFileId?: string;
   appProperties?: Record<string, string>;
+  fetchImpl?: typeof fetch;
+  accessTokenOverride?: string;
 }): Promise<DriveFileItem> {
-  const token = await getAccessToken();
+  const token = params.accessTokenOverride || (await getAccessToken());
   if (!token) throw new Error('AUTH_REQUIRED');
+  const fetchFn = params.fetchImpl || fetch;
 
   const contentType = params.mimeType || 'application/octet-stream';
   const fileBlob =
@@ -426,8 +471,8 @@ export async function uploadFileToDrive(params: {
   // 1. If an existingFileId is provided, update its media content directly via uploadType=media
   if (params.existingFileId) {
     const safeExistingId = encodeURIComponent(params.existingFileId.trim());
-    const patchRes = await fetch(
-      `https://www.googleapis.com/upload/drive/v3/files/${safeExistingId}?uploadType=media&fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,appProperties`,
+    const patchRes = await fetchFn(
+      `https://www.googleapis.com/upload/drive/v3/files/${safeExistingId}?uploadType=media&fields=id,name,mimeType,version,webViewLink,createdTime,modifiedTime,appProperties`,
       {
         method: 'PATCH',
         headers: {
@@ -439,8 +484,10 @@ export async function uploadFileToDrive(params: {
     );
 
     if (patchRes.status === 401) {
-      cachedAccessToken = null;
-      saveSessionAccessToken(null);
+      if (!params.accessTokenOverride) {
+        cachedAccessToken = null;
+        saveSessionAccessToken(null);
+      }
       throw new Error('AUTH_REQUIRED');
     }
     if (patchRes.ok) {
@@ -450,17 +497,34 @@ export async function uploadFileToDrive(params: {
           ([k, v]) => updatedFile.appProperties?.[k] !== v
         );
         if (needsPropertyUpdate) {
-          void patchDriveFileAppProperties(updatedFile.id, params.appProperties);
+          const patched = await patchDriveFileAppProperties(
+            updatedFile.id,
+            params.appProperties,
+            { fetchImpl: fetchFn, accessTokenOverride: token }
+          );
+          if (patched) {
+            updatedFile.version = patched.version || updatedFile.version;
+            updatedFile.modifiedTime = patched.modifiedTime || updatedFile.modifiedTime;
+            updatedFile.appProperties = patched.appProperties || updatedFile.appProperties;
+          }
         }
       }
       return updatedFile;
     }
-    // If 404 (file was deleted from Drive), fall through to create a new file inside the target folder
+
+    // CRITICAL (Blocco 1.2): Only fall through to file creation if the file was deleted on Drive (404).
+    // On any other error (403, 429, 500, 503, etc.), throw so SaveQueue retries on the same fileId.
+    if (patchRes.status !== 404) {
+      const err = await patchRes.json().catch(() => ({}));
+      throw new Error(
+        err?.error?.message || `Errore aggiornamento file Drive (${patchRes.status})`
+      );
+    }
   }
 
   // 2. Resolve target folder inside "Gestionale ASD"
   let targetFolderId = params.folderId;
-  if (!targetFolderId && params.category) {
+  if (!targetFolderId && params.category && !params.fetchImpl) {
     const { categoryFolder } = await getOrCreateDriveCategoryFolder(params.category);
     targetFolderId = categoryFolder.id;
   }
@@ -477,8 +541,8 @@ export async function uploadFileToDrive(params: {
     metadata.appProperties = params.appProperties;
   }
 
-  const createRes = await fetch(
-    'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,parents,appProperties',
+  const createRes = await fetchFn(
+    'https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType,version,webViewLink,createdTime,modifiedTime,parents,appProperties',
     {
       method: 'POST',
       headers: {
@@ -490,8 +554,10 @@ export async function uploadFileToDrive(params: {
   );
 
   if (createRes.status === 401) {
-    cachedAccessToken = null;
-    saveSessionAccessToken(null);
+    if (!params.accessTokenOverride) {
+      cachedAccessToken = null;
+      saveSessionAccessToken(null);
+    }
     throw new Error('AUTH_REQUIRED');
   }
   if (!createRes.ok) {
@@ -502,10 +568,10 @@ export async function uploadFileToDrive(params: {
   const createdMeta: DriveFileItem = await createRes.json();
 
   // 4. Upload the file content via PATCH ?uploadType=media
-  const mediaRes = await fetch(
+  const mediaRes = await fetchFn(
     `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
       createdMeta.id
-    )}?uploadType=media&fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,appProperties`,
+    )}?uploadType=media&fields=id,name,mimeType,version,webViewLink,createdTime,modifiedTime,appProperties`,
     {
       method: 'PATCH',
       headers: {
@@ -517,8 +583,10 @@ export async function uploadFileToDrive(params: {
   );
 
   if (mediaRes.status === 401) {
-    cachedAccessToken = null;
-    saveSessionAccessToken(null);
+    if (!params.accessTokenOverride) {
+      cachedAccessToken = null;
+      saveSessionAccessToken(null);
+    }
     throw new Error('AUTH_REQUIRED');
   }
   if (!mediaRes.ok) {
@@ -573,13 +641,15 @@ export const LIVE_DB_FILENAME = 'database_gestionale_asd.json';
 export interface LiveDatabaseLoadResult {
   fileId: string;
   content: string;
+  driveVersion?: string;
   modifiedTime?: string;
   webViewLink?: string;
   candidates?: DriveDbCandidate[];
 }
 
 /**
- * Loads a specific database file by its explicit Google Drive fileId and tags it with appProperties.
+ * Loads a specific database file by its explicit Google Drive fileId and tags it with appProperties
+ * if not yet tagged (awaited so `driveVersion` reflects any metadata update).
  */
 export async function loadLiveDatabaseFileById(
   fileId: string,
@@ -593,14 +663,26 @@ export async function loadLiveDatabaseFileById(
     throw new Error('Il file selezionato su Google Drive non è un database JSON valido.');
   }
 
-  void patchDriveFileAppProperties(fileId, {
-    gestionaleAsdDb: '1',
-    associationId,
-  });
+  let meta = await checkDriveFileVersion(fileId);
+  let effectiveVersion = meta?.version;
+  let effectiveModifiedTime = meta?.modifiedTime;
+
+  if (meta?.appProperties?.gestionaleAsdDb !== '1') {
+    const patched = await patchDriveFileAppProperties(fileId, {
+      gestionaleAsdDb: '1',
+      associationId,
+    });
+    if (patched) {
+      effectiveVersion = patched.version || effectiveVersion;
+      effectiveModifiedTime = patched.modifiedTime || effectiveModifiedTime;
+    }
+  }
 
   return {
     fileId,
     content,
+    driveVersion: effectiveVersion,
+    modifiedTime: effectiveModifiedTime,
   };
 }
 
@@ -689,17 +771,24 @@ export async function loadLiveDatabaseFromDrive(options?: {
     try {
       const content = await downloadDriveFileText(file.id);
       if (content && content.trim().startsWith('{')) {
-        // Auto-tag legacy file with appProperties if missing
+        let effectiveDriveVersion = file.version;
+        let effectiveModifiedTime = file.modifiedTime;
+        // Auto-tag legacy file with appProperties if missing (awaited so driveVersion is accurate)
         if (file.appProperties?.gestionaleAsdDb !== '1') {
-          void patchDriveFileAppProperties(file.id, {
+          const patched = await patchDriveFileAppProperties(file.id, {
             gestionaleAsdDb: '1',
             associationId: assocId,
           });
+          if (patched) {
+            effectiveDriveVersion = patched.version || effectiveDriveVersion;
+            effectiveModifiedTime = patched.modifiedTime || effectiveModifiedTime;
+          }
         }
         return {
           fileId: file.id,
           content,
-          modifiedTime: file.modifiedTime,
+          driveVersion: effectiveDriveVersion,
+          modifiedTime: effectiveModifiedTime,
           webViewLink: file.webViewLink,
           candidates: candidates.length > 1 ? candidates : undefined,
         };
@@ -736,19 +825,25 @@ export async function loadLiveDatabaseFromDrive(options?: {
  * Saves/updates the live JSON database in real time inside
  * "Gestionale ASD / 07_Backup_Sistema / database_gestionale_asd.json" on the user's Google Drive,
  * tagging it with `appProperties: { gestionaleAsdDb: '1', associationId }`.
+ * Performs an optimistic concurrency check on Drive's native `version` metadata before writing.
  */
 export async function saveLiveDatabaseToDrive(
   jsonContent: string,
   knownFileId?: string,
-  options?: { associationId?: string }
+  options?: {
+    associationId?: string;
+    expectedDriveVersion?: string | null;
+    fetchImpl?: typeof fetch;
+    accessTokenOverride?: string;
+  }
 ): Promise<DriveFileItem> {
-  const token = await getAccessToken();
+  const token = options?.accessTokenOverride || (await getAccessToken());
   if (!token) throw new Error('AUTH_REQUIRED');
 
   const assocId = options?.associationId || 'asd-apuacamp';
   let targetFileId = knownFileId;
 
-  if (!targetFileId) {
+  if (!targetFileId && !options?.fetchImpl) {
     const byProp = await listDriveFiles(
       `appProperties has { key='gestionaleAsdDb' and value='1' } and trashed = false`
     );
@@ -764,6 +859,27 @@ export async function saveLiveDatabaseToDrive(
     }
   }
 
+  // Blocco 1.1: Pre-write optimistic concurrency check against remote Drive file version
+  if (
+    targetFileId &&
+    options?.expectedDriveVersion !== null &&
+    options?.expectedDriveVersion !== undefined &&
+    String(options.expectedDriveVersion).trim() !== ''
+  ) {
+    const remoteMeta = await checkDriveFileVersion(targetFileId, {
+      fetchImpl: options?.fetchImpl,
+      accessTokenOverride: token,
+    });
+    if (
+      remoteMeta &&
+      !remoteMeta.trashed &&
+      remoteMeta.version &&
+      String(remoteMeta.version).trim() !== String(options.expectedDriveVersion).trim()
+    ) {
+      throw new Error('REMOTE_CHANGED');
+    }
+  }
+
   return await uploadFileToDrive({
     name: LIVE_DB_FILENAME,
     content: jsonContent,
@@ -774,6 +890,8 @@ export async function saveLiveDatabaseToDrive(
       gestionaleAsdDb: '1',
       associationId: assocId,
     },
+    fetchImpl: options?.fetchImpl,
+    accessTokenOverride: token,
   });
 }
 

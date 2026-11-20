@@ -13,64 +13,19 @@ import {
 } from '../types';
 import { parseAmount } from './finance';
 import { newId } from './ids';
-import { todayIso, parseToIsoDate } from './dates';
-
-const ITALIAN_MONTHS_MAP: Record<string, string> = {
-  gen: '01',
-  gennaio: '01',
-  feb: '02',
-  febbraio: '02',
-  mar: '03',
-  marzo: '03',
-  apr: '04',
-  aprile: '04',
-  mag: '05',
-  maggio: '05',
-  giu: '06',
-  giugno: '06',
-  lug: '07',
-  luglio: '07',
-  ago: '08',
-  agosto: '08',
-  set: '09',
-  sett: '09',
-  settembre: '09',
-  ott: '10',
-  ottobre: '10',
-  nov: '11',
-  novembre: '11',
-  dic: '12',
-  dicembre: '12',
-};
+import {
+  todayIso,
+  parseToIsoDate,
+  excelSerialToIsoDate,
+  parseDayMonthYear as parseCanonicalDayMonthYear,
+} from './dates';
 
 /**
  * Helper to extract { day, month, year } from "YYYY-MM-DD" or "DD/MM/YYYY"
+ * Delegates to canonical date parser in `./dates`.
  */
 export function parseDayMonthYear(raw?: string): { day: number; month: number; year: number } | null {
-  if (!raw) return null;
-  const clean = String(raw).trim().replace(/\\/g, '/');
-
-  const isoMatch = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (isoMatch) {
-    return {
-      year: parseInt(isoMatch[1], 10),
-      month: parseInt(isoMatch[2], 10),
-      day: parseInt(isoMatch[3], 10),
-    };
-  }
-
-  const itMatch = clean.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
-  if (itMatch) {
-    let year = parseInt(itMatch[3], 10);
-    if (year < 100) year += 2000;
-    return {
-      day: parseInt(itMatch[1], 10),
-      month: parseInt(itMatch[2], 10),
-      year,
-    };
-  }
-
-  return null;
+  return parseCanonicalDayMonthYear(raw);
 }
 
 /**
@@ -108,167 +63,28 @@ export function calculateCardExpiryDate(
   return `31/12/${parsed.year}`;
 }
 
-const MONTH_NAME_MAP: Record<string, string> = {
-  ...ITALIAN_MONTHS_MAP,
-  jan: '01',
-  january: '01',
-  february: '02',
-  march: '03',
-  april: '04',
-  may: '05',
-  jun: '06',
-  june: '06',
-  jul: '07',
-  july: '07',
-  aug: '08',
-  august: '08',
-  sep: '09',
-  sept: '09',
-  september: '09',
-  oct: '10',
-  october: '10',
-  november: '11',
-  dec: '12',
-  december: '12',
-};
-
-function resolveMonthCode(rawMonth: string): string | null {
-  const clean = rawMonth.toLowerCase().replace(/[^a-z]/g, '');
-  if (!clean) return null;
-  return MONTH_NAME_MAP[clean] || MONTH_NAME_MAP[clean.slice(0, 3)] || null;
-}
-
-function normalizeTwoOrFourDigitYear(rawYear: string | number | undefined, fallbackYear: number): number {
-  if (rawYear === undefined || rawYear === null || String(rawYear).trim() === '') {
-    return fallbackYear;
-  }
-  const y = parseInt(String(rawYear).trim(), 10);
-  if (isNaN(y)) return fallbackYear;
-  if (y < 100) return 2000 + y;
-  return y;
-}
-
-function formatYMD(year: number, month: number, day: number): string | null {
-  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1990 || year > 2100) {
-    return null;
-  }
-  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
 /**
- * Converts an Excel serial date number (e.g. 46037) to "YYYY-MM-DD"
+ * Converts an Excel serial date number (e.g. 46037) to "YYYY-MM-DD".
+ * Delegates to canonical `excelSerialToIsoDate` in `./dates`.
  */
 export function excelSerialToISODate(serial: number): string | null {
-  if (!Number.isFinite(serial) || serial < 30000 || serial > 65000) return null;
-  const utcDays = Math.floor(serial - 25569);
-  const utcMs = utcDays * 86400 * 1000;
-  const d = new Date(utcMs);
-  if (isNaN(d.getTime())) return null;
-  return formatYMD(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+  return excelSerialToIsoDate(serial);
 }
 
 /**
  * Attempts to parse any Italian/International/Excel date representation into "YYYY-MM-DD".
  * Returns null if the input does not contain a valid date.
+ * Delegates to canonical `parseToIsoDate` in `./dates`.
  */
 export function tryParseTransactionDate(
   raw: string | number | Date | undefined | null,
   fallbackYear: number = 2027
 ): string | null {
-  if (raw === null || raw === undefined) return null;
-
-  if (raw instanceof Date) {
-    if (isNaN(raw.getTime())) return null;
-    return formatYMD(raw.getFullYear(), raw.getMonth() + 1, raw.getDate());
-  }
-
-  if (typeof raw === 'number') {
-    return excelSerialToISODate(raw);
-  }
-
-  let trimmed = String(raw).trim();
-  if (!trimmed) return null;
-
-  // 1. Check if it's an Excel serial number stored as string (e.g. "46037" or "46037.0")
-  if (/^\d{5}(?:\.\d+)?$/.test(trimmed)) {
-    const serial = parseFloat(trimmed);
-    const isoFromSerial = excelSerialToISODate(serial);
-    if (isoFromSerial) return isoFromSerial;
-  }
-
-  // Strip optional leading Italian/English day-of-week (e.g. "lun 15/03/2026", "martedì 12 mag 2026")
-  trimmed = trimmed.replace(
-    /^(?:lun(?:ed[iì])?|mar(?:ted[iì])?|mer(?:coled[iì])?|gio(?:ved[iì])?|ven(?:erd[iì])?|sab(?:ato)?|dom(?:enica)?|mon|tue|wed|thu|fri|sat|sun)[,.\s]+(?=\d)/i,
-    ''
-  );
-
-  // 2. ISO or YYYY/MM/DD or YYYY.MM.DD (with optional timestamp)
-  const isoMatch = trimmed.match(/^(\d{4})[\/\-.\s](\d{1,2})[\/\-.\s](\d{1,2})(?:[T\s].*)?$/);
-  if (isoMatch) {
-    const y = parseInt(isoMatch[1], 10);
-    const m = parseInt(isoMatch[2], 10);
-    const d = parseInt(isoMatch[3], 10);
-    return formatYMD(y, m, d);
-  }
-
-  // 3. Numeric DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, DD/MM/YY (or US MM/DD/YY from SheetJS)
-  const numFullMatch = trimmed.match(
-    /^(\d{1,2})[\/\\\-.\s](\d{1,2})[\/\\\-.\s](\d{2,4})(?:\s+\d{1,2}[:.]\d{2}.*)?$/
-  );
-  if (numFullMatch) {
-    const p1 = parseInt(numFullMatch[1], 10);
-    const p2 = parseInt(numFullMatch[2], 10);
-    const y = normalizeTwoOrFourDigitYear(numFullMatch[3], fallbackYear);
-
-    // If p2 > 12 and p1 <= 12, it was formatted in US MM/DD/YYYY (e.g. "03/15/26" by SheetJS)
-    if (p2 > 12 && p1 >= 1 && p1 <= 12) {
-      return formatYMD(y, p1, p2);
-    }
-    return formatYMD(y, p2, p1);
-  }
-
-  // 4. Day + Month Name + optional Year (with spaces, hyphens, slashes, dots: "15-gen-26", "15/gen/2026", "15 gen", "15.mag.2026")
-  const dayMonthTextMatch = trimmed.match(
-    /^(\d{1,2})(?:°|º)?[\s\/\\\-.,_]+([a-zA-Zàèéìòù]+)(?:[\s\/\\\-.,_]+(\d{2,4}))?$/
-  );
-  if (dayMonthTextMatch) {
-    const d = parseInt(dayMonthTextMatch[1], 10);
-    const mCode = resolveMonthCode(dayMonthTextMatch[2]);
-    if (mCode) {
-      const y = normalizeTwoOrFourDigitYear(dayMonthTextMatch[3], fallbackYear);
-      return formatYMD(y, parseInt(mCode, 10), d);
-    }
-  }
-
-  // 5. Month Name + Day + optional Year (e.g. "gen 15 2026", "Jan 15, 2026", "marzo 15")
-  const monthDayTextMatch = trimmed.match(
-    /^([a-zA-Zàèéìòù]+)[\s\/\\\-.,_]+(\d{1,2})(?:°|º)?(?:[\s\/\\\-.,_]+(\d{2,4}))?$/
-  );
-  if (monthDayTextMatch) {
-    const mCode = resolveMonthCode(monthDayTextMatch[1]);
-    const d = parseInt(monthDayTextMatch[2], 10);
-    if (mCode) {
-      const y = normalizeTwoOrFourDigitYear(monthDayTextMatch[3], fallbackYear);
-      return formatYMD(y, parseInt(mCode, 10), d);
-    }
-  }
-
-  // 6. Short numeric DD/MM or DD-MM or DD.MM without year (uses fallbackYear)
-  const shortNumMatch = trimmed.match(/^(\d{1,2})[\/\\\-.](\d{1,2})$/);
-  if (shortNumMatch) {
-    const p1 = parseInt(shortNumMatch[1], 10);
-    const p2 = parseInt(shortNumMatch[2], 10);
-    if (p2 > 12 && p1 >= 1 && p1 <= 12) {
-      return formatYMD(fallbackYear, p1, p2);
-    }
-    return formatYMD(fallbackYear, p2, p1);
-  }
-
-  return null;
+  return parseToIsoDate(raw, fallbackYear);
 }
 
 export function normalizeTransactionDate(raw: string, fallbackYear: number = 2027): string {
-  const iso = tryParseTransactionDate(raw, fallbackYear) || parseToIsoDate(raw, fallbackYear);
+  const iso = parseToIsoDate(raw, fallbackYear);
   if (iso) return iso;
   return (raw || '').trim();
 }
@@ -402,9 +218,7 @@ function extractCleanRowsFromWorksheet(
 
       let valStr = '';
       if (cell.t === 'd' && cell.v instanceof Date) {
-        valStr =
-          formatYMD(cell.v.getFullYear(), cell.v.getMonth() + 1, cell.v.getDate()) ||
-          String(cell.w ?? '').trim();
+        valStr = parseToIsoDate(cell.v) || String(cell.w ?? '').trim();
       } else if (cell.t === 'n' && typeof cell.v === 'number') {
         const formattedText = String(cell.w ?? '').trim();
         // Check if this numeric cell is formatted as an Excel date

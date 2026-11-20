@@ -7,6 +7,36 @@ const STORE_SNAPSHOTS = 'snapshots';
 const LEGACY_SNAPSHOT_KEY_LATEST = 'gestionale_asd_db_snapshot_latest';
 const LEGACY_SNAPSHOT_KEY_PREFIX = 'gestionale_asd_db_snapshot_user_';
 
+// Real legacy keys used in production up to commit 5ca3e9f
+const LEGACY_V4_KEY_PREFIX = 'apuacamp_working_snapshot_v4_';
+const LEGACY_V4_KEY_LATEST = 'apuacamp_working_snapshot_v4_latest';
+const LEGACY_V4_KEY_LOCAL_PRIVATE = 'apuacamp_working_snapshot_v4_local_private';
+const LEGACY_V3_KEY_PREFIX = 'apuacamp_v3_';
+
+const KNOWN_V3_SECTIONS = [
+  'profile',
+  'initialFund',
+  'initialFundBank',
+  'initialFundCash',
+  'cashSummary',
+  'members',
+  'transactions',
+  'recurringExpenses',
+  'recurringPlans',
+  'events',
+  'bookings',
+  'gadgets',
+  'gadgetOrders',
+  'staff',
+  'staffPayments',
+  'roles',
+  'governanceRoles',
+  'assemblies',
+  'grants',
+  'archivedYears',
+  'receipts',
+] as const;
+
 export interface LocalSnapshotRecord {
   key: string;
   email: string;
@@ -124,36 +154,83 @@ async function idbDeleteRecord(key: string): Promise<void> {
   }
 }
 
+function parseV3Key(storageKey: string): { userKey: string; section: string } | null {
+  if (!storageKey.startsWith(LEGACY_V3_KEY_PREFIX)) return null;
+  const remainder = storageKey.slice(LEGACY_V3_KEY_PREFIX.length);
+  for (const section of KNOWN_V3_SECTIONS) {
+    const suffix = `_${section}`;
+    if (remainder.endsWith(suffix) && remainder.length > suffix.length) {
+      const rawUser = remainder.slice(0, remainder.length - suffix.length).trim().toLowerCase();
+      const userKey = rawUser === 'local_private' || rawUser === 'latest' ? 'local' : rawUser;
+      return { userKey, section };
+    }
+  }
+  return null;
+}
+
 /**
  * Migrazione una-tantum da localStorage a IndexedDB:
- * - Rimuove SNAPSHOT_KEY_LATEST così non può mai contaminare un altro account Google.
- * - Sposta eventuali snapshot per-utente (`gestionale_asd_db_snapshot_user_<email>`) dentro IndexedDB
- *   e libera lo spazio di localStorage.
+ * - Migra le chiavi reali del vecchio codice (`apuacamp_working_snapshot_v4_<email>`,
+ *   `apuacamp_working_snapshot_v4_local_private`, `apuacamp_working_snapshot_v4_latest`,
+ *   `apuacamp_v3_<user>_<section>`) e le eventuali chiavi intermedie (`gestionale_asd_db_snapshot_user_<email>`).
+ * - `apuacamp_working_snapshot_v4_latest` viene migrata solo verso `snapshot:local` (mai verso un account email)
+ *   e solo se `snapshot:local` non esiste già e non corrisponde a uno snapshot email già migrato.
+ * - Rimuove tutte le chiavi legacy da localStorage dopo la copia.
  */
 export async function migrateLegacyLocalStorageSnapshots(
-  hydrateFn?: (raw: Partial<AppState>) => AppState
+  hydrateFn?: (raw: Partial<AppState>) => AppState,
+  storageOverride?: Pick<Storage, 'length' | 'key' | 'getItem' | 'removeItem'>
 ): Promise<void> {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    // 1. Elimina sempre la vecchia chiave condivisa non legata ad account
-    localStorage.removeItem(LEGACY_SNAPSHOT_KEY_LATEST);
+  const storage =
+    storageOverride || (typeof localStorage !== 'undefined' ? localStorage : undefined);
+  if (!storage) return;
 
-    // 2. Migra le chiavi per-utente esistenti
-    const keysToMigrate: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(LEGACY_SNAPSHOT_KEY_PREFIX)) {
-        keysToMigrate.push(k);
+  try {
+    const allKeys: string[] = [];
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (k) allKeys.push(k);
+    }
+
+    const v4EmailKeys: Array<{ key: string; email: string }> = [];
+    const intermediateEmailKeys: Array<{ key: string; email: string }> = [];
+    const v3Keys: Array<{ key: string; userKey: string; section: string }> = [];
+    let hasV4LocalPrivate = false;
+    let hasV4Latest = false;
+
+    for (const k of allKeys) {
+      if (k === LEGACY_V4_KEY_LOCAL_PRIVATE) {
+        hasV4LocalPrivate = true;
+      } else if (k === LEGACY_V4_KEY_LATEST) {
+        hasV4Latest = true;
+      } else if (k.startsWith(LEGACY_V4_KEY_PREFIX)) {
+        const email = k.slice(LEGACY_V4_KEY_PREFIX.length).trim().toLowerCase();
+        if (email && email !== 'latest' && email !== 'local_private') {
+          v4EmailKeys.push({ key: k, email });
+        }
+      } else if (k.startsWith(LEGACY_SNAPSHOT_KEY_PREFIX)) {
+        const email = k.slice(LEGACY_SNAPSHOT_KEY_PREFIX.length).trim().toLowerCase();
+        if (email) {
+          intermediateEmailKeys.push({ key: k, email });
+        }
+      } else if (k.startsWith(LEGACY_V3_KEY_PREFIX)) {
+        const parsedV3 = parseV3Key(k);
+        if (parsedV3) {
+          v3Keys.push({ key: k, ...parsedV3 });
+        }
       }
     }
 
-    for (const storageKey of keysToMigrate) {
-      const email = storageKey.slice(LEGACY_SNAPSHOT_KEY_PREFIX.length).trim().toLowerCase();
-      const rawJson = localStorage.getItem(storageKey);
+    const migratedRawJsons = new Set<string>();
+
+    // 1. Migra le chiavi v4 per-email (`apuacamp_working_snapshot_v4_<email>`) e intermedie
+    for (const { key, email } of [...v4EmailKeys, ...intermediateEmailKeys]) {
+      const rawJson = storage.getItem(key);
       if (email && rawJson) {
         try {
           const parsed = JSON.parse(rawJson);
           if (parsed && typeof parsed === 'object') {
+            migratedRawJsons.add(rawJson.trim());
             const existing = await idbGetRecord(makeStoreKey(email));
             if (!existing) {
               const state: AppState = hydrateFn ? hydrateFn(parsed) : (parsed as AppState);
@@ -164,7 +241,94 @@ export async function migrateLegacyLocalStorageSnapshots(
           // ignore malformed legacy entry
         }
       }
-      localStorage.removeItem(storageKey);
+      storage.removeItem(key);
+    }
+
+    // 2. Migra `apuacamp_working_snapshot_v4_local_private` -> `snapshot:local`
+    if (hasV4LocalPrivate) {
+      const rawLocal = storage.getItem(LEGACY_V4_KEY_LOCAL_PRIVATE);
+      if (rawLocal) {
+        try {
+          const parsed = JSON.parse(rawLocal);
+          if (parsed && typeof parsed === 'object') {
+            const existingLocal = await idbGetRecord(makeStoreKey('local'));
+            if (!existingLocal) {
+              const state: AppState = hydrateFn ? hydrateFn(parsed) : (parsed as AppState);
+              await saveLocalSnapshot('local', state, state.version || 1);
+            }
+          }
+        } catch {
+          // ignore malformed legacy entry
+        }
+      }
+      storage.removeItem(LEGACY_V4_KEY_LOCAL_PRIVATE);
+    }
+
+    // 3. Migra `apuacamp_working_snapshot_v4_latest` -> `snapshot:local` (MAI su un account email)
+    // solo se `snapshot:local` non esiste già e il payload non era semplicemente duplicato di un account email già migrato
+    if (hasV4Latest) {
+      const rawLatest = storage.getItem(LEGACY_V4_KEY_LATEST);
+      if (rawLatest && !migratedRawJsons.has(rawLatest.trim())) {
+        try {
+          const parsed = JSON.parse(rawLatest);
+          if (parsed && typeof parsed === 'object') {
+            const existingLocal = await idbGetRecord(makeStoreKey('local'));
+            if (!existingLocal) {
+              const state: AppState = hydrateFn ? hydrateFn(parsed) : (parsed as AppState);
+              await saveLocalSnapshot('local', state, state.version || 1);
+            }
+          }
+        } catch {
+          // ignore malformed legacy entry
+        }
+      }
+      storage.removeItem(LEGACY_V4_KEY_LATEST);
+    }
+
+    // Rimuovi sempre anche la chiave intermedia condivisa
+    storage.removeItem(LEGACY_SNAPSHOT_KEY_LATEST);
+
+    // 4. Migra eventuali chiavi `apuacamp_v3_<user>_<section>` se lo snapshot corrispondente non esiste ancora
+    if (v3Keys.length > 0) {
+      const byUser = new Map<string, Record<string, unknown>>();
+      for (const { key, userKey, section } of v3Keys) {
+        const rawVal = storage.getItem(key);
+        if (rawVal !== null) {
+          try {
+            const parsedVal: unknown = JSON.parse(rawVal);
+            const acc = byUser.get(userKey) || {};
+            if (section === 'cashSummary' && parsedVal && typeof parsedVal === 'object') {
+              const summaryObj = parsedVal as Record<string, unknown>;
+              if (typeof summaryObj.initialFund === 'number') acc.initialFund = summaryObj.initialFund;
+              if (typeof summaryObj.initialFundBank === 'number') acc.initialFundBank = summaryObj.initialFundBank;
+              if (typeof summaryObj.initialFundCash === 'number') acc.initialFundCash = summaryObj.initialFundCash;
+            } else {
+              acc[section] = parsedVal;
+            }
+            byUser.set(userKey, acc);
+          } catch {
+            // ignore malformed section
+          }
+        }
+        storage.removeItem(key);
+      }
+
+      for (const [userKey, partialState] of byUser.entries()) {
+        const existing = await idbGetRecord(makeStoreKey(userKey));
+        if (!existing && Object.keys(partialState).length > 0) {
+          const state: AppState = hydrateFn
+            ? hydrateFn(partialState as Partial<AppState>)
+            : (partialState as unknown as AppState);
+          await saveLocalSnapshot(userKey, state, state.version || 1);
+        }
+      }
+    }
+
+    // 5. Pulizia finale di qualsiasi chiave residua con prefisso `apuacamp_v3_` o `apuacamp_working_snapshot_v4_`
+    for (const k of allKeys) {
+      if (k.startsWith(LEGACY_V3_KEY_PREFIX) || k.startsWith(LEGACY_V4_KEY_PREFIX)) {
+        storage.removeItem(k);
+      }
     }
   } catch (err) {
     console.warn('Impossibile completare la migrazione legacy da localStorage:', err);
@@ -243,7 +407,7 @@ export async function deleteLocalSnapshot(email: string): Promise<void> {
 /**
  * Cancella i dati locali dell'account da questo computer (consigliato sui PC condivisi al logout):
  * - elimina `snapshot:<email>` e `snapshot:local` da IndexedDB
- * - rimuove eventuali chiavi `driveDbFileId:<email>` / `lastDailyBackup:<email>` in localStorage
+ * - rimuove eventuali chiavi legacy (`apuacamp_working_snapshot_v4_*`, `apuacamp_v3_*`) e `driveDbFileId:<email>` / `lastDailyBackup:<email>` in localStorage
  * - svuota i token OAuth in sessionStorage
  */
 export async function clearLocalAccountData(email?: string | null): Promise<void> {
@@ -257,8 +421,27 @@ export async function clearLocalAccountData(email?: string | null): Promise<void
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(LEGACY_SNAPSHOT_KEY_LATEST);
       localStorage.removeItem(`${LEGACY_SNAPSHOT_KEY_PREFIX}${norm}`);
+      localStorage.removeItem(LEGACY_V4_KEY_LATEST);
+      localStorage.removeItem(LEGACY_V4_KEY_LOCAL_PRIVATE);
+      localStorage.removeItem(`${LEGACY_V4_KEY_PREFIX}${norm}`);
       localStorage.removeItem(`driveDbFileId:${norm}`);
       localStorage.removeItem(`lastDailyBackup:${norm}`);
+
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (
+          k &&
+          (k.startsWith(`${LEGACY_V3_KEY_PREFIX}${norm}_`) ||
+            k.startsWith(`${LEGACY_V3_KEY_PREFIX}local_private_`) ||
+            k.startsWith(`${LEGACY_V3_KEY_PREFIX}latest_`))
+        ) {
+          keysToRemove.push(k);
+        }
+      }
+      for (const k of keysToRemove) {
+        localStorage.removeItem(k);
+      }
     }
   } catch {
     // ignore storage errors
@@ -298,4 +481,9 @@ export async function listStoredAccounts(): Promise<string[]> {
     return Array.from(memoryStore.values()).map((r) => r.email);
   }
 }
+
+export function clearMemoryStoreForTests(): void {
+  memoryStore.clear();
+}
+
 

@@ -149,3 +149,69 @@ test('validateReceiptFor730 - avvisa per Contanti, età fuori 5-18 (es. 4 anni) 
   assert.ok(missingCfRes.warnings.some((w) => w.code === 'missing_participant_cf'));
   assert.ok(missingCfRes.warnings.some((w) => w.code === 'annual_cap_exceeded'));
 });
+
+test('extractReceiptYearFromDate, parseProgressiveFromReceiptNumber & calculatePreviousPaidSameYearForParticipant (Blocco 2.3)', async () => {
+  const {
+    extractReceiptYearFromDate,
+    parseProgressiveFromReceiptNumber,
+    calculatePreviousPaidSameYearForParticipant,
+    findExistingReceiptForContext,
+  } = await import('./receipts');
+
+  // 1. Estrazione anno da date ISO o italiane DD/MM/YYYY
+  assert.equal(extractReceiptYearFromDate('2027-05-14', 2026), 2027);
+  assert.equal(extractReceiptYearFromDate('14/05/2027', 2026), 2027);
+  assert.equal(extractReceiptYearFromDate('data-non-valida', 2027), 2027);
+
+  // 2. Estrazione progressivo da formati con anno in testa o in coda
+  assert.equal(parseProgressiveFromReceiptNumber('15/2027', 2027, 1), 15);
+  assert.equal(parseProgressiveFromReceiptNumber('2027-015', 2027, 1), 15);
+  assert.equal(parseProgressiveFromReceiptNumber('RIC-2027-42', 2027, 1), 42);
+  assert.equal(parseProgressiveFromReceiptNumber('2027/2027', 2027, 1), 2027);
+
+  // 3. Cumulo annuale 210 € per stesso praticante tramite memberId, CF praticante o nome
+  const list: IssuedReceipt[] = [
+    makeReceipt({
+      id: 'r-1',
+      year: 2027,
+      progressive: 1,
+      amount: 100,
+      memberId: 'm-10',
+      participantName: 'Marco Rossi',
+      participantFiscalCode: 'RSSMRC17D12F205K',
+    }),
+    makeReceipt({
+      id: 'r-2',
+      year: 2027,
+      progressive: 2,
+      amount: 80,
+      memberId: undefined, // Ricevuta emessa da movimento senza memberId ma con lo stesso CF praticante
+      participantName: 'Rossi Marco',
+      participantFiscalCode: 'RSSMRC17D12F205K',
+    }),
+    makeReceipt({
+      id: 'r-3-cancelled',
+      year: 2027,
+      progressive: 3,
+      amount: 90,
+      status: 'annullata',
+      memberId: 'm-10',
+      participantName: 'Marco Rossi',
+      participantFiscalCode: 'RSSMRC17D12F205K',
+    }),
+  ];
+
+  const totalPrev = calculatePreviousPaidSameYearForParticipant(list, {
+    year: 2027,
+    memberId: 'm-10',
+    participantFiscalCode: 'RSSMRC17D12F205K',
+    participantName: 'Marco Rossi',
+  });
+  // r-1 (100 via memberId) + r-2 (80 via participantFiscalCode) = 180; r-3 annullata ignorata
+  assert.equal(totalPrev, 180);
+
+  // 4. findExistingReceiptForContext risolve anche per receiptId diretto
+  const foundById = findExistingReceiptForContext(list, { receiptId: 'r-2' });
+  assert.equal(foundById?.id, 'r-2');
+});
+

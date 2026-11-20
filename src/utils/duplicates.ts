@@ -358,27 +358,47 @@ export function extractTransactionIdentity(
     }
   }
 
-  // 2. Check against known Members (childName or parentName) and Staff (requires both first & last name tokens)
+  // 2a. Check against known Members' childName FIRST across all members
+  // (prevents attributing a movement to the first sibling in the array when two siblings share the same parentName)
   for (const m of members) {
-    const candidates = [m.childName, m.parentName].filter(Boolean);
-    for (const candidate of candidates) {
-      const normCand = normalizeTextForMatching(candidate);
-      const candTokens = normCand.split(' ').filter((t) => t.length >= 2);
-      if (candTokens.length >= 2 && candTokens.every((t) => descTokenSet.has(t))) {
-        // Use the member's ID or full childName tokens so two brothers with the same parent are only grouped if same child or parent is referenced
-        const sortedKey = [...candTokens].sort().join('_');
-        return {
-          canonicalPersonKey: `person:${sortedKey}`,
-          displayPersonName: m.childName
-            ? candidate === m.parentName && m.parentName !== m.childName
-              ? `${m.childName} (Genitore: ${m.parentName})`
-              : m.childName
-            : toTitleCase(candidate),
-          meaningfulTokens: candTokens,
-          normalizedFullDescription: normDesc,
-          isVerifiedPerson: true,
-        };
-      }
+    if (!m.childName) continue;
+    const normChild = normalizeTextForMatching(m.childName);
+    const childTokens = normChild.split(' ').filter((t) => t.length >= 2);
+    if (childTokens.length >= 2 && childTokens.every((t) => descTokenSet.has(t))) {
+      const sortedKey = [...childTokens].sort().join('_');
+      return {
+        canonicalPersonKey: `person:${sortedKey}`,
+        displayPersonName: m.childName,
+        meaningfulTokens: childTokens,
+        normalizedFullDescription: normDesc,
+        isVerifiedPerson: true,
+      };
+    }
+  }
+
+  // 2b. Only if no childName matched, check against known Members' parentName
+  for (const m of members) {
+    if (!m.parentName) continue;
+    const normParent = normalizeTextForMatching(m.parentName);
+    const parentTokens = normParent.split(' ').filter((t) => t.length >= 2);
+    if (parentTokens.length >= 2 && parentTokens.every((t) => descTokenSet.has(t))) {
+      const sortedKey = [...parentTokens].sort().join('_');
+      const siblingsWithSameParent = members.filter(
+        (other) =>
+          other.parentName &&
+          normalizeTextForMatching(other.parentName) === normParent
+      );
+      const displayName =
+        siblingsWithSameParent.length === 1 && m.childName && m.parentName !== m.childName
+          ? `${m.childName} (Genitore: ${m.parentName})`
+          : `Genitore: ${m.parentName}`;
+      return {
+        canonicalPersonKey: `person:${sortedKey}`,
+        displayPersonName: displayName,
+        meaningfulTokens: parentTokens,
+        normalizedFullDescription: normDesc,
+        isVerifiedPerson: true,
+      };
     }
   }
 
@@ -448,11 +468,17 @@ export function areTransactionsPotentialDuplicates(
     return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
   }
 
-  // If both transactions have explicit structured memberId or staffId and they differ, they are NEVER the same person
+  // If both transactions have explicit structured memberId, staffId, bookingId, or gadgetOrderId and they differ, they are NEVER duplicates
   if (txA.memberId && txB.memberId && txA.memberId !== txB.memberId) {
     return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
   }
   if (txA.staffId && txB.staffId && txA.staffId !== txB.staffId) {
+    return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
+  }
+  if (txA.bookingId && txB.bookingId && txA.bookingId !== txB.bookingId) {
+    return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
+  }
+  if (txA.gadgetOrderId && txB.gadgetOrderId && txA.gadgetOrderId !== txB.gadgetOrderId) {
     return { isDuplicate: false, daysApart: 0, personName: '', reason: '' };
   }
 

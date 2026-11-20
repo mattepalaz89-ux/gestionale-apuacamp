@@ -1494,6 +1494,375 @@ describe('Sortable Members, Event Discounts (Fixed € / %), Vouchers & Smart Re
     assert.equal(parsed[2].expense, 180);
     assert.equal(parsed[2].category, 'Acquisto Strumenti');
   });
+
+  it('archives fiscal year carrying over PayPal and custom payment account balances and closing year receipts (Blocco 2.1)', () => {
+    const baseState = resetToEmpty2027(null, 2027);
+    const stateWithMultiAccounts = {
+      ...baseState,
+      initialFundBank: 1000,
+      initialFundCash: 200,
+      profile: {
+        ...baseState.profile,
+        activeYear: 2027,
+        initialFundPaypal: 150,
+        customPaymentAccounts: [
+          { id: 'satispay', name: 'Satispay ASD', initialBalance: 50 },
+        ],
+        paymentAccounts: {
+          'Pagam Online': 'satispay',
+        },
+      },
+      initialFund: 1400,
+      transactions: [
+        {
+          id: 'tx-bank',
+          date: '2027-04-10',
+          category: 'Tessere' as const,
+          income: 300,
+          expense: null,
+          method: 'Bonifico' as const,
+          description: 'Tessere bonifico',
+        },
+        {
+          id: 'tx-paypal',
+          date: '2027-04-12',
+          category: 'Evento' as const,
+          income: 90,
+          expense: null,
+          method: 'Paypal' as const,
+          description: 'Iscrizione PayPal',
+        },
+        {
+          id: 'tx-satispay',
+          date: '2027-04-15',
+          category: 'Gadget' as const,
+          income: 40,
+          expense: null,
+          method: 'Pagam Online' as const,
+          description: 'Gadget Satispay',
+        },
+        {
+          id: 'tx-cash',
+          date: '2027-04-16',
+          category: 'Altro' as const,
+          income: null,
+          expense: 30,
+          method: 'Contanti' as const,
+          description: 'Piccola cassa',
+        },
+      ],
+      receipts: [
+        {
+          id: 'rec-2027-1',
+          year: 2027,
+          progressive: 1,
+          number: '1/2027',
+          issueDate: '2027-04-10',
+          status: 'emessa' as const,
+          payerName: 'Mario Rossi',
+          description: 'Tessera 2027',
+          amount: 20,
+          paymentMethod: 'Bonifico' as const,
+        },
+      ],
+    };
+
+    const { nextState, archivedRecord } = archiveFiscalYearState(
+      stateWithMultiAccounts,
+      2028
+    );
+
+    // Bank: 1000 + 300 = 1300; Cash: 200 - 30 = 170; PayPal: 150 + 90 = 240; Satispay: 50 + 40 = 90 -> Total = 1800
+    assert.equal(archivedRecord.summary.finalBankBalance, 1300);
+    assert.equal(archivedRecord.summary.finalCashBalance, 170);
+    assert.equal(archivedRecord.summary.finalPaypalBalance, 240);
+    assert.equal(archivedRecord.summary.customAccountBalances?.[0]?.currentBalance, 90);
+    assert.equal(archivedRecord.summary.finalTotalBalance, 1800);
+    assert.equal(archivedRecord.receipts?.length, 1);
+
+    assert.equal(nextState.initialFundBank, 1300);
+    assert.equal(nextState.initialFundCash, 170);
+    assert.equal(nextState.profile.initialFundPaypal, 240);
+    assert.equal(nextState.profile.customPaymentAccounts?.[0]?.initialBalance, 90);
+    assert.equal(nextState.initialFund, 1800);
+  });
+
+  it('maintains strict referential integrity when deleting members, events, bookings, gadget orders, transactions, and staff (Blocco 2.4)', async () => {
+    const {
+      deleteMemberFromState,
+      deleteEventFromState,
+      deleteBookingFromState,
+      deleteGadgetOrderFromState,
+      deleteTransactionsFromState,
+      deleteStaffMemberFromState,
+    } = await import('./storage');
+
+    const base = resetToEmpty2027(null, 2027);
+    const populated = {
+      ...base,
+      members: [
+        {
+          id: 'm-1',
+          childName: 'Sofia Bianchi',
+          birthDate: '2017-05-10',
+          birthPlace: 'Massa',
+          group: '6-11' as const,
+          childFiscalCode: 'BNCSFI17E50F023A',
+          childAddress: 'Via Roma',
+          parentName: 'Elena Bianchi',
+          parentFiscalCode: '',
+          parentPhone: '',
+          parentEmail: '',
+          membershipCardNumber: '001',
+          isPaid: true,
+          expiryDate: '2027-12-31',
+          insuranceType: 'Gold' as const,
+          photoConsent: true,
+          allergies: '',
+          notesConditions: '',
+          formSignedAndArchived: true,
+        },
+      ],
+      events: [
+        {
+          id: 'ev-1',
+          name: 'Campo Estivo',
+          category: 'summer_camp' as const,
+          date: '2027-07-01',
+          location: 'Mosceta',
+          memberPrice: 200,
+          nonMemberPrice: 220,
+          status: 'aperto' as const,
+        },
+      ],
+      bookings: [
+        {
+          id: 'bk-1',
+          eventId: 'ev-1',
+          eventName: 'Campo Estivo',
+          memberId: 'm-1',
+          childName: 'Sofia Bianchi',
+          parentName: 'Elena Bianchi',
+          confirmed: true,
+          depositAmount: 100,
+          balanceAmount: 100,
+          isDepositPaid: true,
+          isBalancePaid: false,
+          totalPrice: 200,
+          annualCardValid: true,
+          extraInsurancePaid: false,
+          paymentMethod: 'Bonifico' as const,
+        },
+      ],
+      gadgetOrders: [
+        {
+          id: 'go-1',
+          date: '2027-06-01',
+          memberId: 'm-1',
+          childName: 'Sofia Bianchi',
+          parentName: 'Elena Bianchi',
+          parentEmail: '',
+          parentPhone: '',
+          gadgetId: 'gd-1',
+          gadgetName: 'Maglietta',
+          variant: 'M',
+          quantity: 1,
+          unitPrice: 15,
+          totalPrice: 15,
+          isPaid: true,
+          isDelivered: true,
+          paymentMethod: 'Contanti' as const,
+          confirmationEmailSent: false,
+        },
+      ],
+      staff: [
+        {
+          id: 'st-1',
+          name: 'Marco Guida',
+          role: 'Istruttore',
+        },
+      ],
+      transactions: [
+        {
+          id: 'tx-bk',
+          date: '2027-06-10',
+          category: 'SummerCamp' as const,
+          income: 100,
+          expense: null,
+          method: 'Bonifico' as const,
+          description: 'Caparra Campo Sofia Bianchi',
+          memberId: 'm-1',
+          bookingId: 'bk-1',
+          relatedEventId: 'ev-1',
+        },
+        {
+          id: 'tx-go',
+          date: '2027-06-01',
+          category: 'Gadget' as const,
+          income: 15,
+          expense: null,
+          method: 'Contanti' as const,
+          description: 'Maglietta Sofia Bianchi',
+          memberId: 'm-1',
+          gadgetOrderId: 'go-1',
+        },
+        {
+          id: 'tx-st',
+          date: '2027-07-10',
+          category: 'Staff' as const,
+          income: null,
+          expense: 300,
+          method: 'Bonifico' as const,
+          description: 'Compenso Marco Guida',
+          staffId: 'st-1',
+        },
+      ],
+      receipts: [
+        {
+          id: 'rec-1',
+          year: 2027,
+          progressive: 1,
+          number: '1/2027',
+          issueDate: '2027-06-10',
+          status: 'emessa' as const,
+          payerName: 'Elena Bianchi',
+          participantName: 'Sofia Bianchi',
+          description: 'Caparra Campo Estivo',
+          amount: 100,
+          paymentMethod: 'Bonifico' as const,
+          memberId: 'm-1',
+          bookingId: 'bk-1',
+          transactionId: 'tx-bk',
+          gadgetOrderId: 'go-1',
+        },
+      ],
+    };
+
+    // 1. Deleting member unlinks memberId to undefined (never '') across bookings, transactions, gadgetOrders, receipts
+    const afterMemberDel = deleteMemberFromState(populated, 'm-1');
+    assert.equal(afterMemberDel.members.length, 0);
+    assert.equal(afterMemberDel.bookings[0].memberId, undefined);
+    assert.equal(afterMemberDel.transactions[0].memberId, undefined);
+    assert.equal(afterMemberDel.transactions[0].relatedMemberName, 'Sofia Bianchi');
+    assert.equal(afterMemberDel.gadgetOrders[0].memberId, undefined);
+    assert.equal(afterMemberDel.receipts[0].memberId, undefined);
+
+    // 2. Deleting gadget order unlinks gadgetOrderId on transactions and receipts
+    const afterGoDel = deleteGadgetOrderFromState(afterMemberDel, 'go-1');
+    assert.equal(afterGoDel.gadgetOrders.length, 0);
+    assert.equal(afterGoDel.transactions[1].gadgetOrderId, undefined);
+    assert.equal(afterGoDel.receipts[0].gadgetOrderId, undefined);
+
+    // 3. Deleting event deletes its bookings and unlinks relatedEventId and bookingId on transactions and receipts
+    const afterEvDel = deleteEventFromState(afterGoDel, 'ev-1');
+    assert.equal(afterEvDel.events.length, 0);
+    assert.equal(afterEvDel.bookings.length, 0);
+    assert.equal(afterEvDel.transactions[0].relatedEventId, undefined);
+    assert.equal(afterEvDel.transactions[0].bookingId, undefined);
+    assert.equal(afterEvDel.receipts[0].bookingId, undefined);
+
+    // 4. Deleting transaction unlinks transactionId on receipts
+    const afterTxDel = deleteTransactionsFromState(afterEvDel, ['tx-bk']);
+    assert.equal(afterTxDel.receipts[0].transactionId, undefined);
+
+    // 5. Deleting staff member unlinks staffId and retains relatedMemberName on staff transactions
+    const afterStaffDel = deleteStaffMemberFromState(afterTxDel, 'st-1');
+    assert.equal(afterStaffDel.staff.length, 0);
+    const staffTx = afterStaffDel.transactions.find((t) => t.id === 'tx-st')!;
+    assert.equal(staffTx.staffId, undefined);
+    assert.equal(staffTx.relatedMemberName, 'Marco Guida');
+
+    // 6. Deleting booking with alsoDeleteLinkedTransactions = true removes tx and unlinks receipt.transactionId
+    const afterBkDelWithTx = deleteBookingFromState(populated, 'bk-1', true);
+    assert.equal(afterBkDelWithTx.bookings.length, 0);
+    assert.equal(
+      afterBkDelWithTx.transactions.some((t) => t.id === 'tx-bk'),
+      false
+    );
+    assert.equal(afterBkDelWithTx.receipts[0].bookingId, undefined);
+    assert.equal(afterBkDelWithTx.receipts[0].transactionId, undefined);
+  });
+
+  it('distinguishes two siblings sharing the same parentName in duplicate detection (Blocco 2.6)', async () => {
+    const { extractTransactionIdentity, areTransactionsPotentialDuplicates } =
+      await import('./duplicates');
+
+    const siblings: Member[] = [
+      {
+        id: 'm-sib-1',
+        childName: 'Matteo Rossi',
+        birthDate: '2016-03-10',
+        birthPlace: 'Massa',
+        group: '6-11',
+        childFiscalCode: '',
+        childAddress: '',
+        parentName: 'Laura Verdi',
+        parentFiscalCode: '',
+        parentPhone: '',
+        parentEmail: '',
+        membershipCardNumber: '001',
+        isPaid: true,
+        expiryDate: '2027-12-31',
+        insuranceType: 'Gold',
+        photoConsent: true,
+        allergies: '',
+        notesConditions: '',
+        formSignedAndArchived: true,
+      },
+      {
+        id: 'm-sib-2',
+        childName: 'Chiara Rossi',
+        birthDate: '2018-07-22',
+        birthPlace: 'Massa',
+        group: '6-11',
+        childFiscalCode: '',
+        childAddress: '',
+        parentName: 'Laura Verdi',
+        parentFiscalCode: '',
+        parentPhone: '',
+        parentEmail: '',
+        membershipCardNumber: '002',
+        isPaid: true,
+        expiryDate: '2027-12-31',
+        insuranceType: 'Gold',
+        photoConsent: true,
+        allergies: '',
+        notesConditions: '',
+        formSignedAndArchived: true,
+      },
+    ];
+
+    // Even if parentName "Laura Verdi" appears in the description along with second sibling "Chiara Rossi",
+    // childName "Chiara Rossi" is matched first instead of first sibling "Matteo Rossi"
+    const txSibling1: CashTransaction = {
+      id: 'tx-s1',
+      date: '2027-05-10',
+      category: 'Evento',
+      income: 70,
+      expense: null,
+      method: 'Bonifico',
+      description: 'Caparra Evento Matteo Rossi (Bonifico Laura Verdi)',
+    };
+    const txSibling2: CashTransaction = {
+      id: 'tx-s2',
+      date: '2027-05-10',
+      category: 'Evento',
+      income: 70,
+      expense: null,
+      method: 'Bonifico',
+      description: 'Caparra Evento Chiara Rossi (Bonifico Laura Verdi)',
+    };
+
+    const id1 = extractTransactionIdentity(txSibling1, siblings, []);
+    const id2 = extractTransactionIdentity(txSibling2, siblings, []);
+    assert.equal(id1.displayPersonName, 'Matteo Rossi');
+    assert.equal(id2.displayPersonName, 'Chiara Rossi');
+    assert.notEqual(id1.canonicalPersonKey, id2.canonicalPersonKey);
+
+    const dupCheck = areTransactionsPotentialDuplicates(txSibling1, txSibling2, siblings, []);
+    assert.equal(dupCheck.isDuplicate, false);
+  });
 });
+
 
 

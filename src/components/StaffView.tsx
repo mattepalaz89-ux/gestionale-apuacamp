@@ -39,6 +39,7 @@ interface StaffViewProps {
   onAddTransaction: (tx: Omit<CashTransaction, 'id'>) => void;
   onAddStaffMember: (member: StaffMember) => void;
   onUpdateStaffMember?: (member: StaffMember) => void;
+  onDeleteStaffMember?: (id: string) => void;
   onUpdateProfile?: (profile: AssociationProfile) => void;
   onLinkLegacyStaffPayments?: (
     links: { transactionId: string; staffId: string; staffPaymentKind: StaffPaymentKind }[]
@@ -52,6 +53,7 @@ export const StaffView: React.FC<StaffViewProps> = ({
   onAddTransaction,
   onAddStaffMember,
   onUpdateStaffMember,
+  onDeleteStaffMember,
   onUpdateProfile,
   onLinkLegacyStaffPayments,
 }) => {
@@ -68,6 +70,7 @@ export const StaffView: React.FC<StaffViewProps> = ({
   const [isAddPaymentModalOpen, setIsAddPaymentModalOpen] = useState(false);
   const [isAddStaffModalOpen, setIsAddStaffModalOpen] = useState(false);
   const [editingStaffMember, setEditingStaffMember] = useState<StaffMember | null>(null);
+  const [confirmDeleteStaffId, setConfirmDeleteStaffId] = useState<string | null>(null);
   const [isLegacyLinkModalOpen, setIsLegacyLinkModalOpen] = useState(false);
   const [isThresholdsConfigOpen, setIsThresholdsConfigOpen] = useState(false);
   const [selectedReceiptPayment, setSelectedReceiptPayment] = useState<CashTransaction | null>(null);
@@ -167,6 +170,7 @@ export const StaffView: React.FC<StaffViewProps> = ({
   const handleOpenEditStaffModal = (member: StaffMember, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setEditingStaffMember(member);
+    setConfirmDeleteStaffId(null);
     setEditName(member.name);
     setEditRole(member.role);
     setEditFiscalCode(member.fiscalCode || '');
@@ -225,12 +229,7 @@ export const StaffView: React.FC<StaffViewProps> = ({
       income: null,
       expense: amt,
       method: payMethod,
-      accountId:
-        payMethod === 'Paypal'
-          ? payPaypalSourceAccount
-          : payMethod === 'Contanti'
-            ? 'cassa'
-            : 'banca',
+      accountId: payMethod === 'Paypal' ? payPaypalSourceAccount : undefined,
       staffId: targetStaff.id,
       staffPaymentKind: payKind,
       relatedMemberName: targetStaff.name,
@@ -1124,10 +1123,55 @@ export const StaffView: React.FC<StaffViewProps> = ({
                 </div>
               </div>
 
+              {onDeleteStaffMember && editingStaffMember && (
+                <div className="pt-2">
+                  {confirmDeleteStaffId === editingStaffMember.id ? (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 space-y-2">
+                      <p className="text-[11px] text-rose-900 font-medium">
+                        Confermi la rimozione di <strong>{editingStaffMember.name}</strong> dall&apos;elenco collaboratori? I pagamenti storici registrati a Libro Cassa resteranno intatti.
+                      </p>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteStaffId(null)}
+                          className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 font-medium"
+                        >
+                          Annulla
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const targetId = editingStaffMember.id;
+                            onDeleteStaffMember(targetId);
+                            if (selectedStaffId === targetId) setSelectedStaffId('ALL');
+                            setConfirmDeleteStaffId(null);
+                            setEditingStaffMember(null);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold"
+                        >
+                          Elimina Collaboratore
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteStaffId(editingStaffMember.id)}
+                      className="text-[11px] font-semibold text-rose-600 hover:text-rose-800 hover:underline"
+                    >
+                      Rimuovi collaboratore dall&apos;anagrafica...
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setEditingStaffMember(null)}
+                  onClick={() => {
+                    setConfirmDeleteStaffId(null);
+                    setEditingStaffMember(null);
+                  }}
                   className="px-4 py-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg font-medium"
                 >
                   Annulla

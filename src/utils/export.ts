@@ -45,6 +45,10 @@ export function buildAccountingSpreadsheetTabs(params: {
   initialFund: number;
   initialFundBank: number;
   initialFundCash: number;
+  initialFundPaypal?: number;
+  paymentAccounts?: AssociationProfile['paymentAccounts'];
+  paypalExpenseSourceAccount?: AssociationProfile['paypalExpenseSourceAccount'];
+  customPaymentAccounts?: AssociationProfile['customPaymentAccounts'];
   fiscalYear: number;
   associationName: string;
 }): { sheetTitle: string; rows: (string | number | boolean)[][] }[] {
@@ -53,6 +57,10 @@ export function buildAccountingSpreadsheetTabs(params: {
     initialFund,
     initialFundBank,
     initialFundCash,
+    initialFundPaypal = 0,
+    paymentAccounts,
+    paypalExpenseSourceAccount,
+    customPaymentAccounts,
     fiscalYear,
     associationName,
   } = params;
@@ -61,10 +69,18 @@ export function buildAccountingSpreadsheetTabs(params: {
     transactions,
     initialFund,
     initialFundBank,
-    initialFundCash
+    initialFundCash,
+    {
+      initialPaypal: initialFundPaypal,
+      paymentAccounts,
+      paypalExpenseSourceAccount,
+      customPaymentAccounts,
+    }
   );
   const { incomeCategories, expenseCategories } = calculateCategoryBreakdown(transactions);
   const monthly = calculateMonthlyCashFlow(transactions);
+
+  const hasPaypal = totals.initialPaypal !== 0 || totals.currentPaypal !== 0;
 
   const riepilogoRows: (string | number | boolean)[][] = [
     [`RENDICONTO ECONOMICO-FINANZIARIO ESERCIZIO ${fiscalYear} — ${associationName}`, ''],
@@ -74,12 +90,22 @@ export function buildAccountingSpreadsheetTabs(params: {
     ['Fondo Iniziale Totale (Apertura Esercizio)', totals.initialFund],
     ['  di cui Fondo Iniziale Conto Corrente Bancario', totals.initialBank],
     ['  di cui Fondo Iniziale Cassa Contanti', totals.initialCash],
+    ...(hasPaypal ? ([['  di cui Fondo Iniziale Conto PayPal', totals.initialPaypal]] as (string | number)[][]) : []),
+    ...totals.customAccountBalances.map((ca) => [
+      `  di cui Fondo Iniziale ${ca.name}`,
+      ca.initialBalance,
+    ]),
     ['Totale Entrate Esercizio (+)', totals.totalIncome],
     ['Totale Uscite e Spese Esercizio (-)', totals.totalExpense],
     ['Avanzo / Disavanzo Netto di Esercizio', totals.netBalance],
     ['SALDO TOTALE FINALE DISPONIBILE (Fondo + Flusso)', totals.currentTotal],
     ['  di cui Saldo Finale Conto Corrente Bancario', totals.currentBank],
     ['  di cui Saldo Finale Cassa Contanti', totals.currentCash],
+    ...(hasPaypal ? ([['  di cui Saldo Finale Conto PayPal', totals.currentPaypal]] as (string | number)[][]) : []),
+    ...totals.customAccountBalances.map((ca) => [
+      `  di cui Saldo Finale ${ca.name}`,
+      ca.currentBalance,
+    ]),
     ['', ''],
     ['2. ENTRATE PER CATEGORIA ISTITUZIONALE', 'TOTALE (€)', 'N. OPERAZIONI'],
     ...incomeCategories.map((c) => [c.category, c.totalIncome, c.count]),
@@ -142,6 +168,10 @@ export async function exportAccountingToExcel(params: {
   initialFund: number;
   initialFundBank: number;
   initialFundCash: number;
+  initialFundPaypal?: number;
+  paymentAccounts?: AssociationProfile['paymentAccounts'];
+  paypalExpenseSourceAccount?: AssociationProfile['paypalExpenseSourceAccount'];
+  customPaymentAccounts?: AssociationProfile['customPaymentAccounts'];
   fiscalYear: number;
   associationName?: string;
 }): Promise<void> {
@@ -172,11 +202,33 @@ export async function exportArchivedYearToExcel(
   associationName: string = 'Associazione Sportiva Dilettantistica'
 ): Promise<void> {
   const XLSX = await import('xlsx');
+  const zeroStats = calculateCashTotals(archived.transactions, 0, 0, 0);
+  const inferredInitialBank =
+    typeof archived.summary.initialBankBalance === 'number'
+      ? archived.summary.initialBankBalance
+      : Math.round((archived.summary.finalBankBalance - zeroStats.currentBank) * 100) / 100;
+  const inferredInitialCash =
+    typeof archived.summary.initialCashBalance === 'number'
+      ? archived.summary.initialCashBalance
+      : Math.round((archived.summary.finalCashBalance - zeroStats.currentCash) * 100) / 100;
+  const inferredInitialPaypal =
+    typeof archived.summary.initialPaypalBalance === 'number'
+      ? archived.summary.initialPaypalBalance
+      : typeof archived.summary.finalPaypalBalance === 'number'
+        ? Math.round((archived.summary.finalPaypalBalance - zeroStats.currentPaypal) * 100) / 100
+        : 0;
+
   const accountingTabs = buildAccountingSpreadsheetTabs({
     transactions: archived.transactions,
     initialFund: archived.summary.initialFund,
-    initialFundBank: archived.summary.finalBankBalance,
-    initialFundCash: archived.summary.finalCashBalance,
+    initialFundBank: inferredInitialBank,
+    initialFundCash: inferredInitialCash,
+    initialFundPaypal: inferredInitialPaypal,
+    customPaymentAccounts: archived.summary.customAccountBalances?.map((ca) => ({
+      id: ca.id,
+      name: ca.name,
+      initialBalance: ca.initialBalance,
+    })),
     fiscalYear: archived.year,
     associationName,
   });

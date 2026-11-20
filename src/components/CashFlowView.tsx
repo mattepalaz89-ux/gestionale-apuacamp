@@ -506,6 +506,10 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
       initialFund,
       initialFundBank,
       initialFundCash,
+      initialFundPaypal: profile.initialFundPaypal || 0,
+      paymentAccounts: profile.paymentAccounts,
+      paypalExpenseSourceAccount: profile.paypalExpenseSourceAccount,
+      customPaymentAccounts: profile.customPaymentAccounts,
       fiscalYear: profile.activeYear,
       associationName: profile.name,
     });
@@ -539,6 +543,10 @@ export const CashFlowView: React.FC<CashFlowViewProps> = ({
         initialFund,
         initialFundBank,
         initialFundCash,
+        initialFundPaypal: profile.initialFundPaypal || 0,
+        paymentAccounts: profile.paymentAccounts,
+        paypalExpenseSourceAccount: profile.paypalExpenseSourceAccount,
+        customPaymentAccounts: profile.customPaymentAccounts,
         fiscalYear: profile.activeYear,
         associationName: profile.name,
       });

@@ -129,3 +129,39 @@ test('migrateState - popola le tassonomie multi-associazione predefinite e impos
   assert.equal(migrated.profile.deadlinePreset, 'asd_generica');
 });
 
+test('migrateState & isFutureSchemaVersion - non degrada mai uno schemaVersion futuro (> CURRENT_SCHEMA_VERSION) e preserva i campi sconosciuti', async () => {
+  const { isFutureSchemaVersion } = await import('./migrations');
+
+  const futureRaw = {
+    schemaVersion: 5,
+    version: 42,
+    futureRootFeature: { enabled: true, mode: 'quantum' },
+    profile: {
+      name: 'ASD Futuro',
+      activeYear: 2028,
+      futureProfileFlag: 'v5-flag',
+    },
+    initialFundBank: 2000,
+    initialFundCash: 500,
+    members: [],
+    transactions: [],
+  };
+
+  assert.equal(isFutureSchemaVersion(futureRaw), true);
+  assert.equal(isFutureSchemaVersion({ schemaVersion: CURRENT_SCHEMA_VERSION }), false);
+  assert.equal(isFutureSchemaVersion({}), false);
+
+  const migrated = migrateState(futureRaw, 2028);
+  assert.equal(migrated.schemaVersion, 5);
+  assert.equal(migrated.version, 42);
+  assert.deepEqual(
+    (migrated as unknown as Record<string, unknown>).futureRootFeature,
+    { enabled: true, mode: 'quantum' }
+  );
+  assert.equal(
+    (migrated.profile as unknown as Record<string, unknown>).futureProfileFlag,
+    'v5-flag'
+  );
+});
+
+

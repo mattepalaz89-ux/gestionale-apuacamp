@@ -3,17 +3,45 @@
  * Replaces volatile browser localStorage persistence with direct PC file read/write.
  */
 
+export interface FileSystemWritableFileStreamLike {
+  write(data: string | BufferSource | Blob): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface FileSystemFileHandleLike {
+  name?: string;
+  getFile(): Promise<File>;
+  createWritable(): Promise<FileSystemWritableFileStreamLike>;
+}
+
+interface FilePickerAcceptType {
+  description?: string;
+  accept: Record<string, string[]>;
+}
+
+interface WindowWithFilePicker extends Window {
+  showOpenFilePicker?: (options?: {
+    types?: FilePickerAcceptType[];
+    multiple?: boolean;
+  }) => Promise<FileSystemFileHandleLike[]>;
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string;
+    types?: FilePickerAcceptType[];
+  }) => Promise<FileSystemFileHandleLike>;
+}
+
 export interface LocalFileConnection {
   fileName: string;
-  handle: any | null;
+  handle: FileSystemFileHandleLike | null;
   lastSavedAt: string | null;
 }
 
 export function isFileSystemAccessSupported(): boolean {
+  if (typeof window === 'undefined') return false;
+  const win = window as WindowWithFilePicker;
   return (
-    typeof window !== 'undefined' &&
-    typeof (window as any).showOpenFilePicker === 'function' &&
-    typeof (window as any).showSaveFilePicker === 'function'
+    typeof win.showOpenFilePicker === 'function' &&
+    typeof win.showSaveFilePicker === 'function'
   );
 }
 
@@ -22,14 +50,16 @@ export function isFileSystemAccessSupported(): boolean {
  * Uses File System Access API when available outside cross-origin iframe restrictions.
  */
 export async function openLocalDatabaseFileWithPicker(): Promise<{
-  handle: any;
+  handle: FileSystemFileHandleLike;
   fileName: string;
   content: string;
 } | null> {
   if (!isFileSystemAccessSupported()) {
     return null;
   }
-  const [fileHandle] = await (window as any).showOpenFilePicker({
+  const win = window as WindowWithFilePicker;
+  if (!win.showOpenFilePicker) return null;
+  const [fileHandle] = await win.showOpenFilePicker({
     types: [
       {
         description: 'File Database Gestionale ASD (.json)',
@@ -55,7 +85,7 @@ export async function saveAsLocalDatabaseFileWithPicker(
   suggestedName: string,
   jsonContent: string
 ): Promise<{
-  handle: any;
+  handle: FileSystemFileHandleLike;
   fileName: string;
 } | null> {
   if (!isFileSystemAccessSupported()) {
@@ -63,7 +93,12 @@ export async function saveAsLocalDatabaseFileWithPicker(
     return null;
   }
   try {
-    const fileHandle = await (window as any).showSaveFilePicker({
+    const win = window as WindowWithFilePicker;
+    if (!win.showSaveFilePicker) {
+      downloadLocalDatabaseFile(suggestedName, jsonContent);
+      return null;
+    }
+    const fileHandle = await win.showSaveFilePicker({
       suggestedName,
       types: [
         {
@@ -78,9 +113,14 @@ export async function saveAsLocalDatabaseFileWithPicker(
       handle: fileHandle,
       fileName: fileHandle.name || suggestedName,
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     // If user aborted picker, return null; if security error (e.g. iframe), fall back to direct download
-    if (err?.name === 'AbortError') return null;
+    if (
+      (err instanceof DOMException && err.name === 'AbortError') ||
+      (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
+    ) {
+      return null;
+    }
     downloadLocalDatabaseFile(suggestedName, jsonContent);
     return null;
   }
@@ -90,7 +130,7 @@ export async function saveAsLocalDatabaseFileWithPicker(
  * Writes updated JSON content directly into an already connected FileSystemFileHandle on the user's PC.
  */
 export async function writeToLocalFileHandle(
-  fileHandle: any,
+  fileHandle: FileSystemFileHandleLike | null | undefined,
   jsonContent: string
 ): Promise<boolean> {
   if (!fileHandle || typeof fileHandle.createWritable !== 'function') {

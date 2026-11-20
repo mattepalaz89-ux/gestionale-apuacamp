@@ -269,7 +269,7 @@ function migrateV1ToV2(state: AppState): AppState {
 
   return {
     ...state,
-    schemaVersion: 2,
+    schemaVersion: Math.max(state.schemaVersion || 2, 2),
     members,
     transactions,
     recurringExpenses,
@@ -283,9 +283,19 @@ function migrateV1ToV2(state: AppState): AppState {
 }
 
 /**
+ * Returns true if the raw JSON database was saved by a newer version of the app
+ * (`schemaVersion > CURRENT_SCHEMA_VERSION`).
+ */
+export function isFutureSchemaVersion(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const ver = (raw as { schemaVersion?: unknown }).schemaVersion;
+  return typeof ver === 'number' && Number.isFinite(ver) && Math.floor(ver) > CURRENT_SCHEMA_VERSION;
+}
+
+/**
  * Pure, idempotent schema migration function.
- * Accepts any raw JSON object (v1 without `schemaVersion` or v2) and upgrades it to `CURRENT_SCHEMA_VERSION`
- * without ever discarding fields or silently corrupting unparseable dates.
+ * Accepts any raw JSON object (v1 without `schemaVersion` or v2+) and upgrades it to at least `CURRENT_SCHEMA_VERSION`
+ * without ever downgrading a future `schemaVersion`, discarding unknown fields, or silently corrupting unparseable dates.
  */
 export function migrateState(raw: unknown, fallbackYear = 2027): AppState {
   const parsed =

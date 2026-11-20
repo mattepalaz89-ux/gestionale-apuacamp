@@ -105,3 +105,43 @@ export function decideSyncAction(
 
   return 'conflict';
 }
+
+export type SaveActionDecision = 'write' | 'noop' | 'pull-remote' | 'conflict';
+
+/**
+ * Pure function that decides how to handle a Google Drive write or periodic poll
+ * by comparing the `knownDriveVersion` (from the last load/save) against the
+ * `currentDriveVersion` (currently on Google Drive metadata) and `hasLocalPending`.
+ */
+export function decideSaveAction(params: {
+  knownDriveVersion?: string | number | null;
+  currentDriveVersion?: string | number | null;
+  hasLocalPending: boolean;
+}): SaveActionDecision {
+  const known =
+    params.knownDriveVersion !== null &&
+    params.knownDriveVersion !== undefined &&
+    String(params.knownDriveVersion).trim() !== ''
+      ? String(params.knownDriveVersion).trim()
+      : null;
+
+  const current =
+    params.currentDriveVersion !== null &&
+    params.currentDriveVersion !== undefined &&
+    String(params.currentDriveVersion).trim() !== ''
+      ? String(params.currentDriveVersion).trim()
+      : null;
+
+  // If we don't have both versions or they are identical, no remote change occurred
+  if (!known || !current || known === current) {
+    return params.hasLocalPending ? 'write' : 'noop';
+  }
+
+  // Remote Drive version changed since our last load/save
+  if (!params.hasLocalPending) {
+    return 'pull-remote';
+  }
+
+  return 'conflict';
+}
+

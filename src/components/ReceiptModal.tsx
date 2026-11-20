@@ -73,6 +73,9 @@ import {
   findExistingReceiptForContext,
   isTaxDeductionClausePresent,
   validateReceiptFor730,
+  extractReceiptYearFromDate,
+  parseProgressiveFromReceiptNumber,
+  calculatePreviousPaidSameYearForParticipant,
 } from '../utils/receipts';
 
 interface ReceiptModalProps {
@@ -191,7 +194,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     }
   };
 
-  const docYear = Number(docDate.slice(0, 4)) || profile.activeYear;
+  const docYear = extractReceiptYearFromDate(docDate, profile.activeYear);
 
   const computeProposedNumber = (
     targetDocType: 'ricevuta' | 'preventivo' | 'sollecito',
@@ -208,6 +211,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       const matchedExisting =
         existingReceipt ||
         findExistingReceiptForContext(receipts, {
+          receiptId: transaction?.receiptId,
           transactionId: transaction?.id,
           bookingId: booking?.id,
           gadgetOrderId: gadgetOrder?.id,
@@ -225,7 +229,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
         transaction?.date ||
         gadgetOrder?.date ||
         todayIso();
-      const initialYear = Number(initialDate.slice(0, 4)) || profile.activeYear;
+      const initialYear = extractReceiptYearFromDate(initialDate, profile.activeYear);
 
       setDocType(nextType);
       setDocDate(initialDate);
@@ -748,17 +752,21 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       activityDescriptionSubtext: config.activityDescriptionSubtext,
     });
 
-  const previousPaidSameYearForParticipant = receipts
-    .filter(
-      (r) =>
-        r.status === 'emessa' &&
-        r.year === docYear &&
-        r.id !== loadedReceiptId &&
-        ((member?.id && r.memberId === member.id) ||
-          (childName &&
-            (r.participantName || '').trim().toLowerCase() === childName.trim().toLowerCase()))
-    )
-    .reduce((acc, r) => acc + (Number(r.amount) || 0), 0);
+  const previousPaidSameYearForParticipant = calculatePreviousPaidSameYearForParticipant(
+    receipts,
+    {
+      year: docYear,
+      excludeReceiptId: loadedReceiptId || undefined,
+      memberId:
+        member?.id ||
+        booking?.memberId ||
+        gadgetOrder?.memberId ||
+        transaction?.memberId ||
+        loadedReceiptObj?.memberId,
+      participantFiscalCode: childFiscalCode,
+      participantName: childName,
+    }
+  );
 
   const tax730Validation = is730ClauseActive
     ? validateReceiptFor730(
@@ -806,11 +814,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     const nextProg = nextReceiptProgressive(receipts, docYear);
     let progressive = loadedReceiptObj?.progressive ?? nextProg;
     if (!loadedReceiptObj && isManualNumber) {
-      const numMatch = receiptNumber.match(/(\d+)/);
-      const parsedNum = numMatch ? Number(numMatch[1]) : NaN;
-      if (Number.isFinite(parsedNum) && parsedNum > 0 && parsedNum !== docYear) {
-        progressive = parsedNum;
-      }
+      progressive = parseProgressiveFromReceiptNumber(receiptNumber, docYear, nextProg);
     }
 
     const receiptId = loadedReceiptId || newId('rec');
@@ -825,6 +829,8 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
       memberId:
         member?.id ||
         booking?.memberId ||
+        gadgetOrder?.memberId ||
+        transaction?.memberId ||
         loadedReceiptObj?.memberId,
       participantName: childName,
       participantFiscalCode: childFiscalCode || undefined,

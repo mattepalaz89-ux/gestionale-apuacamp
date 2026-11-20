@@ -188,6 +188,110 @@ export function isPlaceholderFiscalCode(cf?: string): boolean {
   );
 }
 
+/**
+ * Estrae l'anno a 4 cifre dalla data del documento (supporta sia YYYY-MM-DD sia DD/MM/YYYY),
+ * con fallback all'anno attivo del profilo.
+ */
+export function extractReceiptYearFromDate(
+  dateStr?: string,
+  fallbackYear = 2027
+): number {
+  const iso = parseToIsoDate(dateStr);
+  if (iso) {
+    const yr = Number(iso.slice(0, 4));
+    if (Number.isFinite(yr) && yr >= 1900 && yr <= 2100) return yr;
+  }
+  const directYr = Number((dateStr || '').trim().slice(0, 4));
+  if (Number.isFinite(directYr) && directYr >= 1900 && directYr <= 2100) {
+    return directYr;
+  }
+  return fallbackYear;
+}
+
+/**
+ * Estrae il numero progressivo da una stringa numero ricevuta (es. "12/2027", "2027-015", "RIC-2027-4")
+ * ignorando il token corrispondente all'anno di emissione a 4 cifre.
+ */
+export function parseProgressiveFromReceiptNumber(
+  numberStr: string | undefined | null,
+  year: number,
+  fallbackProgressive: number
+): number {
+  if (!numberStr) return fallbackProgressive;
+  const groups = numberStr.match(/\d+/g);
+  if (!groups || groups.length === 0) return fallbackProgressive;
+
+  const yearStr = String(year);
+  const nonYearGroup = groups.find((g) => g !== yearStr);
+  if (nonYearGroup) {
+    const parsed = parseInt(nonYearGroup, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+
+  if (groups.length >= 2 && groups[0] === yearStr) {
+    const parsedSecond = parseInt(groups[1], 10);
+    if (Number.isFinite(parsedSecond) && parsedSecond > 0) return parsedSecond;
+  }
+
+  return fallbackProgressive;
+}
+
+/**
+ * Calcola il totale già pagato (ricevute emesse non annullate) nello stesso anno per lo stesso praticante,
+ * confrontando per:
+ * 1) `memberId` (se presente), oppure
+ * 2) `participantFiscalCode` valido (non segnaposto), oppure
+ * 3) `participantName` normalizzato.
+ */
+export function calculatePreviousPaidSameYearForParticipant(
+  receipts: IssuedReceipt[] | undefined | null,
+  criteria: {
+    year: number;
+    excludeReceiptId?: string;
+    memberId?: string;
+    participantFiscalCode?: string;
+    participantName?: string;
+  }
+): number {
+  if (!Array.isArray(receipts) || receipts.length === 0) return 0;
+  const cleanMemberId = (criteria.memberId || '').trim();
+  const cleanCf = !isPlaceholderFiscalCode(criteria.participantFiscalCode)
+    ? (criteria.participantFiscalCode || '').trim().toUpperCase()
+    : '';
+  const cleanName = (criteria.participantName || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  const isGenericName = !cleanName || cleanName === 'socio tesserato';
+
+  let sum = 0;
+  for (const r of receipts) {
+    if (!r || r.status !== 'emessa' || r.year !== criteria.year) continue;
+    if (criteria.excludeReceiptId && r.id === criteria.excludeReceiptId) continue;
+
+    let matches = false;
+    if (cleanMemberId && r.memberId && r.memberId.trim() === cleanMemberId) {
+      matches = true;
+    } else if (
+      cleanCf &&
+      !isPlaceholderFiscalCode(r.participantFiscalCode) &&
+      (r.participantFiscalCode || '').trim().toUpperCase() === cleanCf
+    ) {
+      matches = true;
+    } else if (!isGenericName && r.participantName) {
+      const rName = r.participantName.trim().toLowerCase().replace(/\s+/g, ' ');
+      if (rName === cleanName) {
+        matches = true;
+      }
+    }
+
+    if (matches) {
+      sum += Number(r.amount) || 0;
+    }
+  }
+  return Math.round(sum * 100) / 100;
+}
+
 export function isTaxDeductionClausePresent(params: {
   forTaxDeduction?: boolean;
   legalTaxClause?: string;

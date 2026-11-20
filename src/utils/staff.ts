@@ -26,7 +26,8 @@ function escapeRegExp(str: string): string {
 }
 
 /**
- * Verifica la corrispondenza sul NOME COMPLETO a parola intera (regex con \b, case-insensitive)
+ * Verifica la corrispondenza sul NOME COMPLETO a parola intera (con confini di parola Unicode-aware,
+ * case-insensitive, compatibile con nomi accentati come "Niccolò" o apostrofi come "D'Amico")
  * per i movimenti storici privi di `staffId`.
  * Non effettua MAI corrispondenze sul solo nome di battesimo ("Emma" non fa match con "Gemma",
  * e "Nicola Rossi" non fa match con "Nicola Bianchi").
@@ -39,7 +40,7 @@ export function matchesLegacyStaffFullName(
   const cleanName = staffFullName.trim().replace(/\s+/g, ' ');
   if (!cleanName) return false;
   const pattern = escapeRegExp(cleanName).replace(/\s+/g, '\\s+');
-  const regex = new RegExp(`\\b${pattern}\\b`, 'i');
+  const regex = new RegExp(`(?<![\\p{L}\\p{N}_])${pattern}(?![\\p{L}\\p{N}_])`, 'iu');
   return regex.test(description);
 }
 

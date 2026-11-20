@@ -55,6 +55,10 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'UNPAID' | 'UNDELIVERED' | 'EMAIL_PENDING'>('ALL');
   const [isAddOrderOpen, setIsAddOrderOpen] = useState(false);
   const [isAddCatalogOpen, setIsAddCatalogOpen] = useState(false);
+  const [statusBanner, setStatusBanner] = useState<{
+    type: 'ok' | 'err';
+    text: string;
+  } | null>(null);
 
   // Order form state
   const [selectedMemberId, setSelectedMemberId] = useState('');
@@ -106,7 +110,10 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
   const handleCreateOrder = (e: React.FormEvent) => {
     e.preventDefault();
     if (!childName.trim()) {
-      alert('Inserisci il nome del socio / bimbo');
+      setStatusBanner({
+        type: 'err',
+        text: 'Inserisci il nome del socio / bimbo per salvare la prenotazione gadget.',
+      });
       return;
     }
     const g = gadgets.find((item) => item.id === selectedGadgetId);
@@ -147,6 +154,10 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
     setVariant('');
     setQuantity(1);
     setNotes('');
+    setStatusBanner({
+      type: 'ok',
+      text: `Prenotazione "${gadgetName}" registrata per ${childName.trim()}.`,
+    });
   };
 
   const handleCreateCatalogItem = (e: React.FormEvent) => {
@@ -169,7 +180,10 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
     try {
       const rows = await readUploadedSpreadsheetRows(file);
       if (rows.length <= 1) {
-        alert('Il file selezionato è vuoto.');
+        setStatusBanner({
+          type: 'err',
+          text: 'Il file selezionato è vuoto.',
+        });
         return;
       }
       const imported: GadgetOrder[] = [];
@@ -203,13 +217,22 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
 
       if (imported.length > 0) {
         onImportGadgetOrders(imported);
-        alert(`Importate ${imported.length} prenotazioni gadget! Controlla gli alert per le email di conferma da inviare.`);
+        setStatusBanner({
+          type: 'ok',
+          text: `Importate ${imported.length} prenotazioni gadget! Controlla gli alert per le email di conferma da inviare.`,
+        });
       } else {
-        alert('Nessuna riga valida trovata nel file.');
+        setStatusBanner({
+          type: 'err',
+          text: 'Nessuna riga valida trovata nel file.',
+        });
       }
     } catch (err) {
       console.error(err);
-      alert('Errore nella lettura del file Excel/CSV.');
+      setStatusBanner({
+        type: 'err',
+        text: 'Errore nella lettura del file Excel/CSV.',
+      });
     }
     e.target.value = '';
   };
@@ -242,6 +265,25 @@ export const GadgetsView: React.FC<GadgetsViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {statusBanner && (
+        <div
+          className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border text-xs font-semibold ${
+            statusBanner.type === 'ok'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              : 'bg-rose-50 border-rose-200 text-rose-900'
+          }`}
+        >
+          <span>{statusBanner.text}</span>
+          <button
+            type="button"
+            onClick={() => setStatusBanner(null)}
+            className="px-2 py-0.5 rounded-lg bg-white/80 hover:bg-white text-slate-600 font-bold"
+          >
+            Chiudi
+          </button>
+        </div>
+      )}
+
       {/* Top KPI Cards & Catalog Overview */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">

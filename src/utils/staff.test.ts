@@ -317,3 +317,24 @@ test('matchMemberForRegistration - associa prima per CF, poi per nome+data di na
   assert.equal(ambiguous.status, 'ambiguous');
   assert.equal(ambiguous.candidates.length, 2);
 });
+
+test('matchesLegacyStaffFullName - supporta nomi italiani accentati e apostrofi ai confini di parola (Blocco 2.5)', () => {
+  assert.equal(
+    matchesLegacyStaffFullName('Niccolò - Quota lavoro sportivo', 'Niccolò'),
+    true
+  );
+  assert.equal(
+    matchesLegacyStaffFullName('Compenso Giosuè Carducci per escursione', 'Giosuè Carducci'),
+    true
+  );
+  assert.equal(
+    matchesLegacyStaffFullName("Liquidazione Andrea D'Amico guida", "Andrea D'Amico"),
+    true
+  );
+  // Non deve fare match parziale dentro una parola più lunga con lettere accentate
+  assert.equal(
+    matchesLegacyStaffFullName('Pagato Niccolòescu per fornitura', 'Niccolò'),
+    false
+  );
+});
+

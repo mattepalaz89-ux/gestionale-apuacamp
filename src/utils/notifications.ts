@@ -19,26 +19,14 @@ import {
 import { detectDuplicateTransactions } from './duplicates';
 import { formatEuro } from './finance';
 import { calculateStaffAnnualSummary } from './staff';
+import { parseIsoToLocalDate } from './dates';
 
 /**
- * Parses Italian "DD/MM/YYYY" or ISO "YYYY-MM-DD" into a Date object (at midnight local)
+ * Parses Italian "DD/MM/YYYY", ISO "YYYY-MM-DD", or textual dates into a Date object (at midnight local)
+ * using canonical calendar validation from `./dates`.
  */
 export function parseAnyDate(raw?: string): Date | null {
-  if (!raw) return null;
-  const clean = raw.trim().replace(/\\/g, '/');
-  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
-    const [y, m, d] = clean.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  }
-  const m = clean.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
-  if (m) {
-    const day = parseInt(m[1], 10);
-    const month = parseInt(m[2], 10);
-    let year = parseInt(m[3], 10);
-    if (year < 100) year += 2000;
-    return new Date(year, month - 1, day);
-  }
-  return null;
+  return parseIsoToLocalDate(raw);
 }
 
 export function diffDays(target: Date, ref: Date = new Date()): number {

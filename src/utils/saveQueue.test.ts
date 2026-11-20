@@ -90,3 +90,20 @@ test('createSaveQueue - 4. se saveFn lancia errore, lo stato va in error e il pr
   assert.equal(queue.getStatus(), 'idle');
   assert.deepEqual(savedStates, [2]);
 });
+
+test('createSaveQueue - 5. cancelPending() annulla la scrittura in attesa nel debounce senza invocare saveFn', async () => {
+  const savedStates: string[] = [];
+  const queue = createSaveQueue<string>(async (state) => {
+    savedStates.push(state);
+  }, 40);
+
+  queue.enqueue('will-be-cancelled');
+  assert.equal(queue.getStatus(), 'pending');
+
+  queue.cancelPending();
+  assert.equal(queue.getStatus(), 'idle');
+
+  await sleep(80);
+  assert.deepEqual(savedStates, []);
+});
+

@@ -92,18 +92,34 @@ export function hydrateAppState(
 }
 
 /**
- * Increments the optimistic concurrency `version` counter and records `updatedAt` and `updatedBy`.
+ * Increments the optimistic concurrency `version` counter (using `floorVersion` if higher than `state.version`)
+ * and records `updatedAt` and `updatedBy`.
  */
-export function bumpStateVersion(state: AppState, userEmail?: string | null): AppState {
+export function bumpStateVersion(
+  state: AppState,
+  userEmail?: string | null,
+  floorVersion?: number
+): AppState {
   const currentVersion =
     typeof state.version === 'number' && Number.isFinite(state.version) && state.version >= 1
       ? Math.floor(state.version)
       : 1;
+  const safeFloor =
+    typeof floorVersion === 'number' && Number.isFinite(floorVersion) && floorVersion >= 1
+      ? Math.floor(floorVersion)
+      : 0;
+  const baseVersion = Math.max(currentVersion, safeFloor);
   const cleanEmail = (userEmail || '').trim().toLowerCase() || state.updatedBy || 'local';
+  const safeSchemaVersion =
+    typeof state.schemaVersion === 'number' &&
+    Number.isFinite(state.schemaVersion) &&
+    state.schemaVersion > CURRENT_SCHEMA_VERSION
+      ? Math.floor(state.schemaVersion)
+      : CURRENT_SCHEMA_VERSION;
   return {
     ...state,
-    schemaVersion: CURRENT_SCHEMA_VERSION,
-    version: currentVersion + 1,
+    schemaVersion: safeSchemaVersion,
+    version: baseVersion + 1,
     updatedAt: new Date().toISOString(),
     updatedBy: cleanEmail,
   };
@@ -192,8 +208,20 @@ export function archiveFiscalYearState(
     currentState.transactions,
     currentState.initialFund,
     currentState.initialFundBank,
-    currentState.initialFundCash
+    currentState.initialFundCash,
+    {
+      initialPaypal: currentState.profile.initialFundPaypal || 0,
+      paymentAccounts: currentState.profile.paymentAccounts,
+      paypalExpenseSourceAccount: currentState.profile.paypalExpenseSourceAccount,
+      customPaymentAccounts: currentState.profile.customPaymentAccounts,
+    }
   );
+
+  const closingYearReceipts = Array.isArray(currentState.receipts)
+    ? currentState.receipts
+        .filter((r) => r && r.year === closingYear)
+        .map((r) => ({ ...r }))
+    : [];
 
   const archivedRecord: ArchivedFiscalYear = {
     id: newId(`arch-${closingYear}`),
@@ -201,12 +229,17 @@ export function archiveFiscalYearState(
     archivedAt: todayIso(),
     summary: {
       initialFund: totals.initialFund,
+      initialBankBalance: totals.initialBank,
+      initialCashBalance: totals.initialCash,
+      initialPaypalBalance: totals.initialPaypal,
       totalIncome: totals.totalIncome,
       totalExpense: totals.totalExpense,
       netBalance: totals.netBalance,
       finalTotalBalance: totals.currentTotal,
       finalBankBalance: totals.currentBank,
       finalCashBalance: totals.currentCash,
+      finalPaypalBalance: totals.currentPaypal,
+      customAccountBalances: totals.customAccountBalances.map((ca) => ({ ...ca })),
       membersCount: currentState.members.length,
       eventsCount: currentState.events.length,
       bookingsCount: currentState.bookings.length,
@@ -216,6 +249,7 @@ export function archiveFiscalYearState(
     bookings: [...currentState.bookings],
     gadgetOrders: [...currentState.gadgetOrders],
     membersSnapshot: currentState.members.map((m) => ({ ...m })),
+    receipts: closingYearReceipts,
   };
 
   // Transition members: retain all members in registry; archive solar cards into cardHistory while keeping valid Tessera 365
@@ -255,14 +289,33 @@ export function archiveFiscalYearState(
     };
   });
 
+  const nextCustomPaymentAccounts = Array.isArray(currentState.profile.customPaymentAccounts)
+    ? currentState.profile.customPaymentAccounts.map((acc) => {
+        const closingAcc = totals.customAccountBalances.find((cb) => cb.id === acc.id);
+        return {
+          ...acc,
+          initialBalance: closingAcc ? closingAcc.currentBalance : acc.initialBalance,
+        };
+      })
+    : currentState.profile.customPaymentAccounts;
+
+  const safeSchemaVersion =
+    typeof currentState.schemaVersion === 'number' &&
+    Number.isFinite(currentState.schemaVersion) &&
+    currentState.schemaVersion > CURRENT_SCHEMA_VERSION
+      ? Math.floor(currentState.schemaVersion)
+      : CURRENT_SCHEMA_VERSION;
+
   const nextState: AppState = {
     ...currentState,
-    schemaVersion: CURRENT_SCHEMA_VERSION,
+    schemaVersion: safeSchemaVersion,
     version: (currentState.version || 1) + 1,
     updatedAt: new Date().toISOString(),
     profile: {
       ...currentState.profile,
       activeYear: targetNewYear,
+      initialFundPaypal: totals.currentPaypal,
+      customPaymentAccounts: nextCustomPaymentAccounts,
     },
     initialFund: totals.currentTotal,
     initialFundBank: totals.currentBank,
@@ -278,6 +331,159 @@ export function archiveFiscalYearState(
   };
 
   return { nextState, archivedRecord };
+}
+
+/**
+ * Pure referential-integrity helper: deletes a member while preserving all historical accounting transactions,
+ * bookings, gadget orders, and receipts (unlinking `memberId` to `undefined` and retaining `relatedMemberName`).
+ */
+export function deleteMemberFromState(state: AppState, memberId: string): AppState {
+  const deletedMember = state.members.find((m) => m.id === memberId);
+  return {
+    ...state,
+    members: state.members.filter((m) => m.id !== memberId),
+    transactions: state.transactions.map((t) =>
+      t.memberId === memberId
+        ? {
+            ...t,
+            memberId: undefined,
+            relatedMemberName: t.relatedMemberName || deletedMember?.childName,
+          }
+        : t
+    ),
+    bookings: state.bookings.map((b) =>
+      b.memberId === memberId ? { ...b, memberId: undefined } : b
+    ),
+    gadgetOrders: state.gadgetOrders.map((o) =>
+      o.memberId === memberId ? { ...o, memberId: undefined } : o
+    ),
+    receipts: (state.receipts || []).map((r) =>
+      r.memberId === memberId ? { ...r, memberId: undefined } : r
+    ),
+  };
+}
+
+/**
+ * Pure referential-integrity helper: deletes an event and its bookings while preserving all accounting
+ * transactions and receipts (unlinking `relatedEventId` and `bookingId` to `undefined`).
+ */
+export function deleteEventFromState(state: AppState, eventId: string): AppState {
+  const removedBookingIds = new Set(
+    state.bookings.filter((b) => b.eventId === eventId).map((b) => b.id)
+  );
+  return {
+    ...state,
+    events: state.events.filter((e) => e.id !== eventId),
+    bookings: state.bookings.filter((b) => b.eventId !== eventId),
+    transactions: state.transactions.map((t) => {
+      const clearEvent = t.relatedEventId === eventId;
+      const clearBooking = Boolean(t.bookingId && removedBookingIds.has(t.bookingId));
+      if (!clearEvent && !clearBooking) return t;
+      return {
+        ...t,
+        ...(clearEvent ? { relatedEventId: undefined } : {}),
+        ...(clearBooking ? { bookingId: undefined } : {}),
+      };
+    }),
+    receipts: (state.receipts || []).map((r) =>
+      r.bookingId && removedBookingIds.has(r.bookingId)
+        ? { ...r, bookingId: undefined }
+        : r
+    ),
+  };
+}
+
+/**
+ * Pure referential-integrity helper: deletes an event booking, either deleting or unlinking its linked
+ * transactions, and unlinking `bookingId` (plus any deleted `transactionId`) on emitted receipts.
+ */
+export function deleteBookingFromState(
+  state: AppState,
+  bookingId: string,
+  alsoDeleteLinkedTransactions = false
+): AppState {
+  const deletedTxIds = alsoDeleteLinkedTransactions
+    ? new Set(state.transactions.filter((t) => t.bookingId === bookingId).map((t) => t.id))
+    : new Set<string>();
+
+  return {
+    ...state,
+    bookings: state.bookings.filter((b) => b.id !== bookingId),
+    transactions: alsoDeleteLinkedTransactions
+      ? state.transactions.filter((t) => t.bookingId !== bookingId)
+      : state.transactions.map((t) =>
+          t.bookingId === bookingId ? { ...t, bookingId: undefined } : t
+        ),
+    receipts: (state.receipts || []).map((r) => {
+      const clearBooking = r.bookingId === bookingId;
+      const clearTx = Boolean(r.transactionId && deletedTxIds.has(r.transactionId));
+      if (!clearBooking && !clearTx) return r;
+      return {
+        ...r,
+        ...(clearBooking ? { bookingId: undefined } : {}),
+        ...(clearTx ? { transactionId: undefined } : {}),
+      };
+    }),
+  };
+}
+
+/**
+ * Pure referential-integrity helper: deletes a gadget order while preserving accounting transactions
+ * and receipts (unlinking `gadgetOrderId` to `undefined`).
+ */
+export function deleteGadgetOrderFromState(state: AppState, orderId: string): AppState {
+  return {
+    ...state,
+    gadgetOrders: state.gadgetOrders.filter((o) => o.id !== orderId),
+    transactions: state.transactions.map((t) =>
+      t.gadgetOrderId === orderId ? { ...t, gadgetOrderId: undefined } : t
+    ),
+    receipts: (state.receipts || []).map((r) =>
+      r.gadgetOrderId === orderId ? { ...r, gadgetOrderId: undefined } : r
+    ),
+  };
+}
+
+/**
+ * Pure referential-integrity helper: deletes one or more transactions and unlinks `transactionId`
+ * on any emitted receipts that referenced them.
+ */
+export function deleteTransactionsFromState(
+  state: AppState,
+  transactionIds: string[]
+): AppState {
+  if (!transactionIds || transactionIds.length === 0) return state;
+  const idSet = new Set(transactionIds);
+  return {
+    ...state,
+    transactions: state.transactions.filter((t) => !idSet.has(t.id)),
+    receipts: (state.receipts || []).map((r) =>
+      r.transactionId && idSet.has(r.transactionId)
+        ? { ...r, transactionId: undefined }
+        : r
+    ),
+  };
+}
+
+/**
+ * Pure referential-integrity helper: deletes a staff collaborator while preserving all historical
+ * accounting transactions (unlinking `staffId` to `undefined` and retaining `relatedMemberName`).
+ */
+export function deleteStaffMemberFromState(state: AppState, staffId: string): AppState {
+  const deletedStaff = state.staff.find((s) => s.id === staffId);
+  return {
+    ...state,
+    staff: state.staff.filter((s) => s.id !== staffId),
+    transactions: state.transactions.map((t) =>
+      t.staffId === staffId
+        ? {
+            ...t,
+            staffId: undefined,
+            relatedMemberName: t.relatedMemberName || deletedStaff?.name,
+          }
+        : t
+    ),
+  };
 }
 
 /**

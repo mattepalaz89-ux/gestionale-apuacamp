@@ -1,40 +1,58 @@
-const ITALIAN_MONTHS_MAP: Record<string, number> = {
+const MONTH_NAME_TO_NUMBER: Record<string, number> = {
   gen: 1,
   gennaio: 1,
   jan: 1,
+  january: 1,
   feb: 2,
   febbraio: 2,
+  february: 2,
   mar: 3,
   marzo: 3,
+  march: 3,
   apr: 4,
   aprile: 4,
+  april: 4,
   mag: 5,
   maggio: 5,
   may: 5,
   giu: 6,
   giugno: 6,
   jun: 6,
+  june: 6,
   lug: 7,
   luglio: 7,
   jul: 7,
+  july: 7,
   ago: 8,
   agosto: 8,
   aug: 8,
+  august: 8,
   set: 9,
   sett: 9,
   settembre: 9,
   sep: 9,
+  sept: 9,
+  september: 9,
   ott: 10,
   ottobre: 10,
   oct: 10,
+  october: 10,
   nov: 11,
   novembre: 11,
+  november: 11,
   dic: 12,
   dicembre: 12,
   dec: 12,
+  december: 12,
 };
 
-function isValidCalendarYMD(year: number, month: number, day: number): boolean {
+function resolveMonthNumber(rawMonth: string): number | null {
+  const clean = rawMonth.toLowerCase().replace(/[^a-zàèéìòù]/g, '');
+  if (!clean) return null;
+  return MONTH_NAME_TO_NUMBER[clean] ?? MONTH_NAME_TO_NUMBER[clean.slice(0, 3)] ?? null;
+}
+
+export function isValidCalendarYMD(year: number, month: number, day: number): boolean {
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
     return false;
   }
@@ -114,11 +132,12 @@ export function parseToIsoDate(
 
   if (typeof input !== 'string') return null;
 
-  // Strip time portion or day-of-week prefixes like "lun 15/03/2026"
-  let s = input
+  // Normalize backslashes and strip day-of-week prefixes like "lun 15/03/2026" or "Mon, 15 Mar 2026"
+  const s = input
     .trim()
+    .replace(/\\/g, '/')
     .replace(
-      /^(lun|mar|mer|gio|ven|sab|dom|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica)[.,\s]+/i,
+      /^(?:lun(?:ed[iì])?|mar(?:ted[iì])?|mer(?:coled[iì])?|gio(?:ved[iì])?|ven(?:erd[iì])?|sab(?:ato)?|dom(?:enica)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)[.,\s]+(?=\d|[a-zA-Z])/i,
       ''
     )
     .trim();
@@ -133,7 +152,7 @@ export function parseToIsoDate(
   }
 
   // 2. ISO YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD (with optional time suffix)
-  const isoMatch = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/);
+  const isoMatch = s.match(/^(\d{4})[-/.\s](\d{1,2})[-/.\s](\d{1,2})(?:[T\s].*)?$/);
   if (isoMatch) {
     const year = Number(isoMatch[1]);
     const month = Number(isoMatch[2]);
@@ -143,7 +162,7 @@ export function parseToIsoDate(
 
   // 3. Numeric DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, DD/MM/YY (or SheetJS US MM/DD/YY when unambiguous)
   const dmyMatch = s.match(
-    /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/
+    /^(\d{1,2})[-/.\s](\d{1,2})[-/.\s](\d{2}|\d{4})(?:\s+\d{1,2}[:.]\d{2}(?:[:.]\d{2})?.*)?$/
   );
   if (dmyMatch) {
     const first = Number(dmyMatch[1]);
@@ -171,18 +190,20 @@ export function parseToIsoDate(
       if (second >= 1 && second <= 12 && first >= 1 && first <= 31) {
         return formatYMDToIso(fallbackYear, second, first);
       }
+      if (first >= 1 && first <= 12 && second > 12 && second <= 31) {
+        return formatYMDToIso(fallbackYear, first, second);
+      }
       return null;
     }
   }
 
-  // 5. Textual Italian/English month name: e.g. "15 gen 2026", "15-gen-26", "3 febbraio 2026", "15/mar/2026", "15 mar"
+  // 5. Textual Day + Italian/English month name: e.g. "15 gen 2026", "15-gen-26", "3 febbraio 2026", "15/mar/2026", "15° mar"
   const textMonthMatch = s.match(
-    /^(\d{1,2})[\s\-/.°ª]+([a-zA-Zàèéìòù]+)(?:[\s\-/.,]+(\d{2}|\d{4}))?$/
+    /^(\d{1,2})(?:°|º|ª)?[\s\-/.,_]+([a-zA-Zàèéìòù]+)(?:[\s\-/.,_]+(\d{2}|\d{4}))?$/
   );
   if (textMonthMatch) {
     const day = Number(textMonthMatch[1]);
-    const monthKey = textMonthMatch[2].toLowerCase();
-    const month = ITALIAN_MONTHS_MAP[monthKey];
+    const month = resolveMonthNumber(textMonthMatch[2]);
     if (!month) return null;
 
     let year: number | undefined;
@@ -197,7 +218,55 @@ export function parseToIsoDate(
     return formatYMDToIso(year, month, day);
   }
 
+  // 6. Textual Italian/English month name + Day + optional Year: e.g. "Jan 15, 2026", "marzo 15 2026", "marzo 15"
+  const monthFirstMatch = s.match(
+    /^([a-zA-Zàèéìòù]+)[\s\-/.,_]+(\d{1,2})(?:°|º|ª)?(?:[\s\-/.,_]+(\d{2}|\d{4}))?$/
+  );
+  if (monthFirstMatch) {
+    const month = resolveMonthNumber(monthFirstMatch[1]);
+    const day = Number(monthFirstMatch[2]);
+    if (!month) return null;
+
+    let year: number | undefined;
+    if (monthFirstMatch[3]) {
+      const rawYear = Number(monthFirstMatch[3]);
+      year = monthFirstMatch[3].length === 2 ? expandTwoDigitYear(rawYear) : rawYear;
+    } else if (fallbackYear && Number.isInteger(fallbackYear)) {
+      year = fallbackYear;
+    }
+
+    if (!year) return null;
+    return formatYMDToIso(year, month, day);
+  }
+
   return null;
+}
+
+/**
+ * Extracts validated `{ year, month, day }` components from any supported date input.
+ * Returns `null` if the date is invalid or cannot be parsed.
+ */
+export function parseDayMonthYear(
+  input: unknown,
+  fallbackYear?: number
+): { year: number; month: number; day: number } | null {
+  const iso = parseToIsoDate(input, fallbackYear);
+  if (!iso) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  return { year: y, month: m, day: d };
+}
+
+/**
+ * Parses any supported date format into a local `Date` object at 00:00:00 local time.
+ * Strictly validates calendar dates (e.g., rejects '31/02/2026' instead of rolling into March).
+ */
+export function parseIsoToLocalDate(
+  input: unknown,
+  fallbackYear?: number
+): Date | null {
+  const parts = parseDayMonthYear(input, fallbackYear);
+  if (!parts) return null;
+  return new Date(parts.year, parts.month - 1, parts.day);
 }
 
 /**

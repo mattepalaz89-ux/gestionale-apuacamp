@@ -356,12 +356,24 @@ export interface ArchivedFiscalYear {
   archivedAt: string;
   summary: {
     initialFund: number;
+    initialBankBalance?: number;
+    initialCashBalance?: number;
+    initialPaypalBalance?: number;
     totalIncome: number;
     totalExpense: number;
     netBalance: number;
     finalTotalBalance: number;
     finalBankBalance: number;
     finalCashBalance: number;
+    finalPaypalBalance?: number;
+    customAccountBalances?: {
+      id: string;
+      name: string;
+      initialBalance: number;
+      income: number;
+      expense: number;
+      currentBalance: number;
+    }[];
     membersCount: number;
     eventsCount: number;
     bookingsCount: number;
@@ -371,6 +383,7 @@ export interface ArchivedFiscalYear {
   bookings: EventBooking[];
   gadgetOrders: GadgetOrder[];
   membersSnapshot: Member[];
+  receipts?: IssuedReceipt[];
   driveFileId?: string;
   driveWebViewLink?: string;
   isLightSummaryOnly?: boolean;

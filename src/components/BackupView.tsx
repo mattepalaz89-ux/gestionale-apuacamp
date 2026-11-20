@@ -81,7 +81,9 @@ interface BackupViewProps {
   onGoogleLogout: () => Promise<void>;
   onRestoreState: (state: AppState) => void;
   onResetToDefaults: () => void;
-  onArchiveFiscalYear: (targetNewYear: number) => ArchivedFiscalYear | null;
+  onArchiveFiscalYear: (
+    targetNewYear: number
+  ) => ArchivedFiscalYear | null | Promise<ArchivedFiscalYear | null>;
   onUpdateArchivedYear?: (updated: ArchivedFiscalYear) => void;
   onAnonymizeArchivedHealthData?: (minAgeYears?: number) => number;
   onUpdateProfile: (profile: AssociationProfile) => void;
@@ -208,8 +210,6 @@ export const BackupView: React.FC<BackupViewProps> = ({
   const handleRestoreDriveSnapshot = async (entry: DriveBackupEntry) => {
     try {
       setIsLoadingDriveBackups(true);
-      // Save current state as a pre-overwrite backup first so nothing is ever lost
-      await createDriveBackupSnapshot(appState, 'pre-overwrite').catch(() => {});
       const restoredState = await loadDriveBackupById(entry.id);
       onRestoreState(restoredState);
       setWorkspaceStatus({
@@ -231,7 +231,13 @@ export const BackupView: React.FC<BackupViewProps> = ({
     appState.transactions,
     appState.initialFund,
     appState.initialFundBank,
-    appState.initialFundCash
+    appState.initialFundCash,
+    {
+      initialPaypal: appState.profile.initialFundPaypal || 0,
+      paymentAccounts: appState.profile.paymentAccounts,
+      paypalExpenseSourceAccount: appState.profile.paypalExpenseSourceAccount,
+      customPaymentAccounts: appState.profile.customPaymentAccounts,
+    }
   );
 
   const memberTransitionStats = computeYearTransitionMemberStats(
@@ -316,7 +322,8 @@ export const BackupView: React.FC<BackupViewProps> = ({
     );
     if (!confirmed) return;
 
-    const archivedSnapshot = onArchiveFiscalYear(targetNewYear);
+    const archivedSnapshot = await onArchiveFiscalYear(targetNewYear);
+    if (!archivedSnapshot) return;
 
     if (archivedSnapshot && googleUserEmail) {
       setIsSyncing(true);
@@ -1305,6 +1312,10 @@ export const BackupView: React.FC<BackupViewProps> = ({
                     initialFund: appState.initialFund,
                     initialFundBank: appState.initialFundBank,
                     initialFundCash: appState.initialFundCash,
+                    initialFundPaypal: appState.profile.initialFundPaypal || 0,
+                    paymentAccounts: appState.profile.paymentAccounts,
+                    paypalExpenseSourceAccount: appState.profile.paypalExpenseSourceAccount,
+                    customPaymentAccounts: appState.profile.customPaymentAccounts,
                     fiscalYear: appState.profile.activeYear,
                     associationName: appState.profile.name,
                   })
@@ -1708,6 +1719,10 @@ export const BackupView: React.FC<BackupViewProps> = ({
                   initialFund: appState.initialFund,
                   initialFundBank: appState.initialFundBank,
                   initialFundCash: appState.initialFundCash,
+                  initialFundPaypal: appState.profile.initialFundPaypal || 0,
+                  paymentAccounts: appState.profile.paymentAccounts,
+                  paypalExpenseSourceAccount: appState.profile.paypalExpenseSourceAccount,
+                  customPaymentAccounts: appState.profile.customPaymentAccounts,
                   fiscalYear: appState.profile.activeYear,
                   associationName: appState.profile.name,
                 })
